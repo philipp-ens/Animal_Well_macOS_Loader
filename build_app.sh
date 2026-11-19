@@ -1,0 +1,50 @@
+#!/bin/bash
+# Builds "Animal Well x86.app" from m12_game.c, dxbc2msl.c, m12_main.m and get_game_files.sh
+# (run it in the folder that holds them):
+#     bash build_app.sh
+# The app contains only the loader. It holds nothing of the game - at its first start it asks for your own
+# "Animal Well.exe".
+set -e
+NAME="Animal Well Translator_x86_64" # the app's name: in Finder, the Dock and the menu bar
+APP="$NAME.app"
+rm -rf "$APP"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+cp get_game_files.sh "$APP/Contents/Resources/"       # the SteamCMD download, offered at the first start
+
+clang -arch x86_64 -O2 -fobjc-arc m12_game.c dxbc2msl.c m12_main.m \
+    -framework Cocoa -framework Metal -framework MetalKit -framework QuartzCore \
+    -framework AudioToolbox -framework GameController \
+    -o "$APP/Contents/MacOS/$NAME"
+
+# The identifier stays "local.animalwellloader": the app's remembered settings (game file, Steam library) are
+# stored under it, and get_game_files.sh writes to it.
+cat > "$APP/Contents/Info.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>                 <string>$NAME</string>
+    <key>CFBundleDisplayName</key>          <string>$NAME</string>
+    <key>CFBundleIdentifier</key>           <string>local.animalwellloader</string>
+    <key>CFBundleExecutable</key>           <string>$NAME</string>
+    <key>CFBundlePackageType</key>          <string>APPL</string>
+    <key>CFBundleShortVersionString</key>   <string>0.1</string>
+    <key>CFBundleVersion</key>              <string>1</string>
+    <key>LSMinimumSystemVersion</key>       <string>11.0</string>
+    <key>LSApplicationCategoryType</key>    <string>public.app-category.games</string>
+    <key>NSHighResolutionCapable</key>      <true/>
+    <key>NSPrincipalClass</key>             <string>NSApplication</string>
+</dict>
+</plist>
+EOF
+
+# For starting it from Steam (a game's Properties -> Launch Options):
+#     /bin/bash "<full path>/Animal Well x86.app/Contents/Resources/steam_launch.sh" %command%
+# (It lives in Resources, not MacOS: everything in Contents/MacOS counts as program code that must be signed
+#  on its own, and an unsigned script there makes codesign refuse the whole app.)
+# Steam puts the game's own start command where %command% stands: the path of Animal Well.exe.
+printf '%s\n' '#!/bin/bash' "exec \"\$(dirname \"\$0\")/../MacOS/$NAME\" \"\$1\"" > "$APP/Contents/Resources/steam_launch.sh"
+chmod +x "$APP/Contents/Resources/steam_launch.sh"
+
+codesign --force --sign - "$APP"        # "ad hoc" signature: enough to run it on this Mac
+echo "built \"$APP\" - open it with:  open \"$APP\""
