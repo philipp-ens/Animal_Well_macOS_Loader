@@ -25,6 +25,9 @@ int  game_wants_quit(void);
 int  game_steam_start(const char *libsteam_api_path);   /* optional, before game_start: 1 = connected and
                                                            achievements available, 0 = not (try another copy) */
 void game_steam_stop(void);                             /* when the program ends */                             /* set when "quit" is chosen in the main menu */
+uint8_t *game_icon(int *width, int *height);    /* after game_start: the icon stored in the exe, as width * height * 4
+                                                   bytes (red, green, blue, alpha; top row first). Release it with
+                                                   free(). NULL if the exe has none. */
 const char *game_shader_source(void);           /* after game_start: Metal source of vs_main and ps00, ps01, ...
                                                    translated from the shaders inside the exe */
 extern const uint8_t *game_fullscreen_quad;     /* 6 vertices (192 bytes) for host_draw_fullscreen */

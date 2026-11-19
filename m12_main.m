@@ -1,4 +1,4 @@
-/* Milestone 12, window half (macOS only): the app. Build it with build_app.sh -> AnimalWellLoader.app
+/* Milestone 12, window half (macOS only): the app. Build it with build_app.sh -> "Animal Well Translator_x86_64.app"
  *
  *   clang -arch x86_64 -fobjc-arc m12_game.c dxbc2msl.c m12_main.m -framework Cocoa -framework Metal -framework MetalKit \
  *         -framework QuartzCore -framework AudioToolbox -framework GameController -o m12
@@ -799,6 +799,85 @@ static NSString *download_with_steam_app(void) {
 
 /* Where is the user's Animal Well.exe? A remembered or already downloaded file is used without asking. Only the
  * exact build the loader was made for is accepted (game_exe_supported compares the file's SHA-256 fingerprint). */
+/* The game's own icon, for the Dock and the app switcher while the app runs. The app does not contain the
+ * picture: game_icon() reads it out of the user's Animal Well.exe (128 x 128 pixels, no transparency).
+ * Drawn the way Mac icons are: on a 1024 x 1024 sheet with a margin and rounded corners, and without smoothing,
+ * because it is pixel art. When the app quits, the Dock shows the app file's own icon again. */
+static void use_game_icon(void) {
+    int w = 0, h = 0;
+    uint8_t *pixels = game_icon(&w, &h);
+    if (!pixels) return;
+    NSBitmapImageRep *rep = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL
+                                                                    pixelsWide:w
+                                                                    pixelsHigh:h
+                                                                 bitsPerSample:8
+                                                               samplesPerPixel:4
+                                                                      hasAlpha:YES
+                                                                      isPlanar:NO
+                                                                colorSpaceName:NSDeviceRGBColorSpace
+                                                                  bitmapFormat:NSBitmapFormatAlphaNonpremultiplied
+                                                                   bytesPerRow:w * 4
+                                                                  bitsPerPixel:32];
+    if (rep)
+        for (int y = 0; y < h; y++)
+            memcpy(rep.bitmapData + (size_t)y * (size_t)rep.bytesPerRow, pixels + (size_t)y * (size_t)w * 4, (size_t)w * 4);
+    free(pixels);
+    if (!rep) return;
+    /* draw it into a real 1024 x 1024 bitmap (not a "draw me later" image), so the same picture can go to the
+     * Dock and be written onto the app file */
+    NSBitmapImageRep *sheet = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL
+                                                                      pixelsWide:1024
+                                                                      pixelsHigh:1024
+                                                                   bitsPerSample:8
+                                                                 samplesPerPixel:4
+                                                                        hasAlpha:YES
+                                                                        isPlanar:NO
+                                                                  colorSpaceName:NSDeviceRGBColorSpace
+                                                                     bytesPerRow:0
+                                                                    bitsPerPixel:0];
+    NSGraphicsContext *context = sheet ? [NSGraphicsContext graphicsContextWithBitmapImageRep:sheet] : nil;
+    if (!context) return;
+    [NSGraphicsContext saveGraphicsState];
+    [NSGraphicsContext setCurrentContext:context];
+    [[NSColor clearColor] set];
+    NSRectFillUsingOperation(NSMakeRect(0, 0, 1024, 1024), NSCompositingOperationCopy);    /* all transparent */
+    NSRect box = NSMakeRect(100, 100, 824, 824);                    /* Apple's icon grid: 824 of 1024 */
+    [[NSBezierPath bezierPathWithRoundedRect:box xRadius:185 yRadius:185] addClip];
+    context.imageInterpolation = NSImageInterpolationNone;
+    [rep drawInRect:box
+           fromRect:NSZeroRect
+          operation:NSCompositingOperationSourceOver
+           fraction:1.0
+     respectFlipped:YES
+              hints:@{ NSImageHintInterpolation : @(NSImageInterpolationNone) }];
+    [context flushGraphics];
+    [NSGraphicsContext restoreGraphicsState];
+    NSImage *icon = [[NSImage alloc] initWithSize:NSMakeSize(1024, 1024)];
+    [icon addRepresentation:sheet];
+
+    NSApp.applicationIconImage = icon;                              /* the Dock, while the app runs */
+
+    /* The app file in Finder: macOS can attach a "custom icon" to any file or folder (the same thing as pasting a
+     * picture into the file's Get Info window). It is stored as an invisible file named "Icon\r" inside the app
+     * folder, so that file's presence tells whether it was done already. A rebuilt app starts without it.
+     * Switch it off with:  defaults write local.animalwellloader NoFinderIcon -bool YES */
+    NSString *bundle = [NSBundle mainBundle].bundlePath;
+    if ([bundle.pathExtension isEqualToString:@"app"] &&
+        ![[NSUserDefaults standardUserDefaults] boolForKey:@"NoFinderIcon"] &&
+        ![[NSFileManager defaultManager] fileExistsAtPath:[bundle stringByAppendingPathComponent:@"Icon\r"]]) {
+        BOOL done = [[NSWorkspace sharedWorkspace] setIcon:icon forFile:bundle options:0];
+        printf("Finder icon: %s\n", done ? "set on the app file" : "could not be set (is the app's folder writable?)");
+    }
+}
+
+/* The app's name as the user sees it in Finder (the .app's file name) - not the name in the menu bar, which is
+ * just "Animal Well". Asked at run time, so the dialog stays right if the app is renamed. */
+static NSString *app_file_name(void) {
+    NSString *bundle = [NSBundle mainBundle].bundlePath;
+    if ([bundle.pathExtension isEqualToString:@"app"]) return bundle.lastPathComponent.stringByDeletingPathExtension;
+    return @"This program";                                        /* started as a bare program, not as an app */
+}
+
 static NSString *find_game_file(void) {
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
     if (![defaults boolForKey:@"AskForGameFile"]) {
@@ -808,9 +887,10 @@ static NSString *find_game_file(void) {
         if (path) return adopt_game_file(path, YES);
     }
     for (;;) {
-        NSModalResponse choice = ask(@"Animal Well Loader needs your copy of the game",
-            @"The loader runs the Windows version of Animal Well, which you must own. It needs the file "
-             "\"Animal Well.exe\" from it.\n\nHow do you want to provide it?",
+        NSString *name = app_file_name();
+        NSModalResponse choice = ask([name stringByAppendingString:@" needs your copy of the game"],
+            [name stringByAppendingString:@" runs the Windows version of Animal Well, which you must own. It needs "
+                                           "the file \"Animal Well.exe\" from it.\n\nHow do you want to provide it?"],
             @[ @"Choose a File…", @"Download with SteamCMD", @"Download with the Steam App", @"Quit" ]);
         NSString *path = nil;
         if (choice == NSAlertFirstButtonReturn) path = choose_game_file();
@@ -961,7 +1041,7 @@ int main(int argc, char **argv) {
         [app activateIgnoringOtherApps:YES];
 
         /* Which game file, which save, which Steam library? Each one can be given as an argument:
-         *     AnimalWellLoader ["Animal Well.exe" [save file [libsteam_api.dylib]]]
+         *     "Animal Well" ["Animal Well.exe" [save file [libsteam_api.dylib]]]      (the program inside the app)
          * What is not given is found by the app itself: the game file is remembered / found / asked for, the save
          * lives in ~/Library/Application Support/Animal Well/, Steam's library is searched for.
          * Started from Steam's launch options the game file arrives as the only argument. */
@@ -1028,6 +1108,7 @@ int main(int argc, char **argv) {
         game_start(exePath.fileSystemRepresentation, savePath ? savePath.fileSystemRepresentation : NULL,
                    WINDOW_W, WINDOW_H);
         compile_shaders();
+        use_game_icon();
         g_quadBuffer = [g_device newBufferWithBytes:game_fullscreen_quad
                                              length:192
                                             options:MTLResourceStorageModeShared];
