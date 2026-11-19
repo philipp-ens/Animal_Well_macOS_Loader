@@ -29,13 +29,7 @@ the Steam overlay.
 
 ## Build
 
-Put these files in one folder:
-
-```
-m12_game.c   m12_game.h   m12_main.m   dxbc2msl.c   dxbc2msl.h   get_game_files.sh   build_app.sh
-```
-
-Then:
+Clone the project into a folder. From this folder, run:
 
 ```bash
 bash build_app.sh
