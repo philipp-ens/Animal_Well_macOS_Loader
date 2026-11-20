@@ -1,13 +1,12 @@
-# Animal Well x86
+# Animal Well Loader x86_64
 
 Runs the Windows version of **ANIMAL WELL** on a Mac, using your own copy of the game.
 
 This is an unofficial fan project. It is not affiliated with or endorsed by the game's developer or publisher.
-**You need to own ANIMAL WELL on Steam.** The app contains nothing of the game: no code, no graphics, no sound.
-Everything comes from your own `Animal Well.exe` when the app starts.
+**This is not the full application. You need to own ANIMAL WELL on Steam or already have a copy of the game.**
 
-It is not an emulator and not a Windows compatibility layer. The app loads the game's program code from the exe
-and supplies the parts the game normally gets from Windows: graphics (Metal), sound, input, save files and Steam.
+The app loads the game's program code from the exe and supplies the parts the game normally gets from Windows:
+graphics (Metal), sound, input, save files and Steam.
 
 ## Status
 
@@ -18,14 +17,14 @@ the Steam overlay.
 |---|---|
 | Tested on | Apple Silicon Mac (through Rosetta 2) |
 | Not tested on | Intel Macs. The app is built for Intel processors, so it should run there, but nobody has tried |
-| Game version | exactly one: Steam build 16245418. Other versions are refused (see [Game version](#game-version)) |
+| Game version | Steam build 16245418 (depot 813231, manifest 8951799273146338346) |
 
-## What you need
+## Requirements
 
 - A Mac with macOS 11 or later. On Apple Silicon, Rosetta 2 must be installed:
   `softwareupdate --install-rosetta --agree-to-license`
 - Apple's command line tools, to build the app: `xcode-select --install`
-- A Steam account that owns ANIMAL WELL
+- A Steam account that owns ANIMAL WELL or an already existing copy of the game.
 
 ## Build
 
@@ -37,7 +36,7 @@ bash build_app.sh
 
 This creates `Animal Well x86.app` in the same folder.
 
-## First start: the game file
+## App-Start
 
 The app needs the file `Animal Well.exe` from the Windows version of the game. If it does not know one yet, it
 asks how you want to provide it:
@@ -81,9 +80,9 @@ Steam is optional. If the Steam app is running and logged in when you start Anim
 
 The window title reads `ANIMAL WELL - Steam connected` when the connection is up.
 
-### The game cannot be started from its entry in your Steam library. Steam offers no Play button on a Mac for a game without a Mac version; only the game's developer can change that.
+### The game cannot be started from its entry in your Steam library. Steam offers no Play button on a Mac for a game without a Mac version
 
-If you really want to turn the overlay off:
+If you really want to turn the Steam overlay off:
 ```bash
 defaults write local.animalwellloader NoOverlay -bool YES
 ```
@@ -92,11 +91,7 @@ defaults write local.animalwellloader NoOverlay -bool YES
 
 - Controller rumble, and the controller speaker and haptics the game uses on some pads
 - Any version of the exe other than the supported one
-- Starting from the game's own Steam library entry (see above)
-
-## Game version
-
-Steam build 16245418 (depot 813231, manifest 8951799273146338346)
+- Starting from the game's own Steam library entry (see above)  
 
 ## Files
 

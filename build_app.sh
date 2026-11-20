@@ -1,12 +1,12 @@
 #!/bin/bash
-# Builds "Animal Well Translator_x86_64.app" from m12_game.c, dxbc2msl.c, m12_main.m and get_game_files.sh
+# Builds "Animal Well Loader_x86_64.app" from m12_game.c, dxbc2msl.c, m12_main.m and get_game_files.sh
 # (run it in the folder that holds them):
 #     bash build_app.sh
 # The app contains only the loader. It holds nothing of the game - at its first start it asks for your own
 # "Animal Well.exe".
 set -e
 # The app has two names:
-FILE_NAME="Animal Well Translator_x86_64"   # the file's name: what Finder shows, what you double-click
+FILE_NAME="Animal Well Loader_x86_64"   # the file's name: what Finder shows, what you double-click
 NAME="Animal Well"                          # the running program's name: the menu bar, "Quit ...", Activity Monitor
 APP="$FILE_NAME.app"
 rm -rf "$APP"
@@ -42,7 +42,7 @@ cat > "$APP/Contents/Info.plist" <<EOF
 EOF
 
 # For starting it from Steam (a game's Properties -> Launch Options):
-#     /bin/bash "<full path>/Animal Well Translator_x86_64.app/Contents/Resources/steam_launch.sh" %command%
+#     /bin/bash "<full path>/Animal Well Loader_x86_64.app/Contents/Resources/steam_launch.sh" %command%
 # (It lives in Resources, not MacOS: everything in Contents/MacOS counts as program code that must be signed
 #  on its own, and an unsigned script there makes codesign refuse the whole app.)
 # Steam puts the game's own start command where %command% stands: the path of Animal Well.exe.
