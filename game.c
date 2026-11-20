@@ -10,10 +10,6 @@
  * Section 5c: Steam, optional (achievements).
  * Section 5d: the Platform table (graphics as in milestone 7).
  * Section 6:  game_start, game_frame, game_set_key, game_audio_mix.
- *
- * Build on the Mac together with the window half:
- *   clang -arch x86_64 -fobjc-arc m12_game.c dxbc2msl.c m12_main.m -framework Cocoa -framework Metal -framework MetalKit \
- *         -framework QuartzCore -framework AudioToolbox -framework GameController -o m12
  */
 #define _CRT_SECURE_NO_WARNINGS
 #include <stdio.h>
@@ -742,7 +738,7 @@ static void steam_unlock(const char *name) { printf("achievement %s (no Steam in
 #endif
 
 /* ===================================================================== 5d. Platform table */
-#include "m12_game.h"
+#include "game.h"
 #include "dxbc2msl.h"
 
 const uint8_t *game_fullscreen_quad;
@@ -1158,7 +1154,7 @@ void game_frame(void) {
 #ifdef GAME_TEST_MAIN
 /* Windows-only test host: no window, no GPU. It implements every host_* function as a checker that follows the
  * same rules Metal enforces, and reports what a real renderer would trip over.
- *   cl /DGAME_TEST_MAIN m12_game.c   ->   m12_game.exe "Animal Well.exe" AnimalWell.sav 900 -1 out.wav */
+ *   cl /DGAME_TEST_MAIN game.c   ->   game.exe "Animal Well.exe" AnimalWell.sav 900 -1 out.wav */
 #define MAXT 64
 static struct { char name[40]; int format, w, h; } t_targets[MAXT];
 static int n_textures, n_targets, n_blends, n_pipelines, n_cbuffers;

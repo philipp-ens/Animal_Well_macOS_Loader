@@ -16,7 +16,7 @@ set -e
 trap 'echo "build_pkg.sh STOPPED at line $LINENO - the step just before this message failed. No package was made."' ERR
 cd "$(dirname "$0")"
 
-SOURCES="m12_game.c m12_game.h m12_main.m dxbc2msl.c dxbc2msl.h get_game_files.sh build_app.sh"
+SOURCES="game.c game.h main.m dxbc2msl.c dxbc2msl.h get_game_files.sh build_app.sh"
 for f in $SOURCES; do
     if [ ! -f "$f" ]; then echo "missing: $f (it must be in this folder)"; exit 1; fi
 done
@@ -223,7 +223,4 @@ if [ ! -f "$OUT" ]; then echo "the package was NOT created"; exit 1; fi
 
 echo
 echo "built \"$OUT\" ($(du -h "$OUT" | cut -f1 | tr -d ' ')) in $(pwd)"
-echo "This file is the release. Double-click it to see the installer; it is now shown in Finder."
-echo "It is not signed with an Apple Developer ID, so a Mac that downloads it will refuse to open it at first -"
-echo "see the README, \"Install\"."
 open -R "$OUT" 2>/dev/null || true              # show the package in a Finder window

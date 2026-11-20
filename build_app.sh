@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds "Animal Well Loader_x86_64.app" from m12_game.c, dxbc2msl.c, m12_main.m and get_game_files.sh
+# Builds "Animal Well Loader_x86_64.app" from game.c, dxbc2msl.c, main.m and get_game_files.sh
 # (run it in the folder that holds them):
 #     bash build_app.sh
 # The app contains only the loader. It holds nothing of the game - at its first start it asks for your own
@@ -13,7 +13,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp get_game_files.sh "$APP/Contents/Resources/"       # the SteamCMD download, offered at the first start
 
-clang -arch x86_64 -O2 -fobjc-arc m12_game.c dxbc2msl.c m12_main.m \
+clang -arch x86_64 -O2 -fobjc-arc game.c dxbc2msl.c main.m \
     -framework Cocoa -framework Metal -framework MetalKit -framework QuartzCore \
     -framework AudioToolbox -framework GameController \
     -o "$APP/Contents/MacOS/$NAME"

@@ -1,10 +1,10 @@
-/* m12_game.h - the contract between the two halves of milestone 12 (the app: exe check, save folder, Steam search).
- *   m12_game.c  : loads the exe, runs the game, turns every graphics call of the game into one host_* call
- *   m12_main.m  : window, keyboard, and the host_* functions implemented with Metal
+/* game.h - the contract between the two halves of milestone 12 (the app: exe check, save folder, Steam search).
+ *   game.c  : loads the exe, runs the game, turns every graphics call of the game into one host_* call
+ *   main.m  : window, keyboard, and the host_* functions implemented with Metal
  * Ids are small integers handed out by the host (0, 1, 2, ...). notes/gfx_contract.md explains each call.
  */
-#ifndef M12_GAME_H
-#define M12_GAME_H
+#ifndef GAME_H
+#define GAME_H
 #include <stdint.h>
 
 /* ---- the window half calls these ---- */

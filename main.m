@@ -1,9 +1,5 @@
 /* Milestone 12, window half (macOS only): the app. Build it with build_app.sh -> "Animal Well Translator_x86_64.app"
  *
- *   clang -arch x86_64 -fobjc-arc m12_game.c dxbc2msl.c m12_main.m -framework Cocoa -framework Metal -framework MetalKit \
- *         -framework QuartzCore -framework AudioToolbox -framework GameController -o m12
- *   ./m12 "/path/to/Animal Well.exe" "/path/to/AnimalWell.sav" ["/path/to/libsteam_api.dylib"]
- *
  * New in 12: started without arguments (double-click) it finds everything itself - if it knows no
  * Animal Well.exe it shows a dialog (choose a file / download with SteamCMD / download with the Steam app's
  * console), checks that the file is the supported version, keeps the save in
@@ -20,7 +16,7 @@
  * From 8: start_audio() opens the Mac's sound output and keeps asking the game half for the next piece of mixed
  * sound (game_audio_mix). The save file given on the command line is now read AND written by the game.
  *
- * m12_game.c turns every graphics call of the game into one host_* call (see m12_game.h). This file implements
+ * game.c turns every graphics call of the game into one host_* call (see game.h). This file implements
  * them: 24 render targets, 51 pipelines built from the game's own (translated) shaders, 8 blend states, constant
  * buffers, textures. notes/gfx_contract.md is the specification.
  *
@@ -37,7 +33,7 @@
 #include <errno.h>
 #include <signal.h>
 #include <unistd.h>
-#include "m12_game.h"
+#include "game.h"
 
 #define WINDOW_W 1280
 #define WINDOW_H 720
