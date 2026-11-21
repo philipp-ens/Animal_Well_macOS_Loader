@@ -1,0 +1,7 @@
+bin/
+obj/
+out/
+qr
+qr.png
+qr_new.png
+status.js
