@@ -71,12 +71,9 @@ WATCHER=$!
 
 # Remove the folder a download leaves behind. If it is still there the next time, SteamCMD takes the download for
 # done and does not fetch the files again - although the game file was moved out of it.
-# (The folder may be nested normally or, because SteamCMD acts as Windows, carry backslashes in its name.)
 clean_download() {
     case "$WORK" in */.animalwellloader) ;; *) return 0 ;; esac      # only ever delete inside our own folder
     rm -rf "$WORK/steamcmd/steamapps/content/app_$APP_ID"
-    find "$WORK" "$WORK/steamcmd" -mindepth 1 -maxdepth 1 -name '*steamapps\\content\\app_'"$APP_ID"'*' \
-         -exec rm -rf {} + 2>/dev/null
     return 0
 }
 
@@ -93,14 +90,10 @@ fi
 
 read -r -p "Steam account name (the login name, not the profile name): " ACCOUNT
 
-# "@sSteamCmdForcePlatformType windows" only affects this SteamCMD run, not your Steam app.
-./steamcmd.sh +@sSteamCmdForcePlatformType windows +login "$ACCOUNT" \
-              +download_depot $APP_ID $DEPOT_ID $MANIFEST_ID +quit
+./steamcmd.sh +login "$ACCOUNT" +download_depot $APP_ID $DEPOT_ID $MANIFEST_ID +quit
 
-# Find the downloaded file. Because SteamCMD was told to act as Windows, it builds paths with backslashes; on a
-# Mac a backslash is an ordinary character, so the file may sit in a normal folder OR carry the whole Windows-style
-# path in its own name ("steamcmd\steamapps\...\Animal Well.exe"). Accept both, anywhere in our work folder and in
-# Steam's download folders, and take the first one with the right fingerprint.
+# Find the downloaded file: look in our work folder and in Steam's download folders, and take the first one with
+# the right fingerprint.
 FOUND=""
 while IFS= read -r candidate; do
     if [ "$(shasum -a 256 "$candidate" | cut -d' ' -f1)" = "$WANTED_SHA256" ]; then
@@ -108,7 +101,7 @@ while IFS= read -r candidate; do
         break
     fi
 done < <(find "$WORK" "$HOME/Library/Application Support/Steam/steamapps/content" "$HOME/Steam" \
-              -type f \( -name "Animal Well.exe" -o -name '*\\Animal Well.exe' \) 2>/dev/null)
+              -type f -name "Animal Well.exe" 2>/dev/null)
 
 if [ -z "$FOUND" ]; then
     echo
