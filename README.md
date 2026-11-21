@@ -26,6 +26,7 @@ the Steam overlay.
 | Controller rumble, and the controller speaker and haptics the game uses on some pads do not work |
 | Any version of the exe other than the supported one does not work                                |
 | Starting from the game's own Steam library entry does not work                                   |
+| Save Files from and to Steam Cloud do not work                                                   |
 
 ## Requirements
 
