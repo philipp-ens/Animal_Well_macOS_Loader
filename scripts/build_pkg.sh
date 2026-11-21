@@ -1,7 +1,7 @@
 #!/bin/bash
 # Makes the release: an installer package that BUILDS the app on the user's Mac and puts it into Applications.
-#     bash build_pkg.sh
-# Result: "Animal Well Loader_x86_64-<version>.pkg" in this folder.
+#     bash scripts/build_pkg.sh
+# Result: "Animal Well Loader_x86_64-<version>.pkg" in the main folder of the repository.
 #
 # The package contains no finished app. It contains the source files and build_app.sh. When the user presses
 # "Install", the package's install script compiles them on that Mac and moves the result to Applications.
@@ -14,16 +14,17 @@
 #   productbuild  wraps that in the installer people know: title, pages of text, Continue / Install buttons
 set -e
 trap 'echo "build_pkg.sh STOPPED at line $LINENO - the step just before this message failed. No package was made."' ERR
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."         # the repository's main folder: the source files are there, the scripts in scripts/
 
-SOURCES="game.c game.h main.m dxbc2msl.c dxbc2msl.h get_game_files.sh build_app.sh"
+# (the package holds them all in one folder, without "scripts/")
+SOURCES="game.c game.h main.m dxbc2msl.c dxbc2msl.h scripts/get_game_files.sh scripts/build_app.sh"
 for f in $SOURCES; do
-    if [ ! -f "$f" ]; then echo "missing: $f (it must be in this folder)"; exit 1; fi
+    if [ ! -f "$f" ]; then echo "missing: $f"; exit 1; fi
 done
 
 # the app's file name and version are decided in one place: build_app.sh
-FILE_NAME=$(sed -n 's/^FILE_NAME="\([^"]*\)".*/\1/p' build_app.sh)
-VERSION=$(sed -n 's/.*CFBundleShortVersionString<\/key>.*<string>\(.*\)<\/string>.*/\1/p' build_app.sh)
+FILE_NAME=$(sed -n 's/^FILE_NAME="\([^"]*\)".*/\1/p' scripts/build_app.sh)
+VERSION=$(sed -n 's/.*CFBundleShortVersionString<\/key>.*<string>\(.*\)<\/string>.*/\1/p' scripts/build_app.sh)
 if [ -z "$FILE_NAME" ] || [ -z "$VERSION" ]; then echo "cannot read the name or version from build_app.sh"; exit 1; fi
 APP="$FILE_NAME.app"
 IDENTIFIER=local.animalwellloader

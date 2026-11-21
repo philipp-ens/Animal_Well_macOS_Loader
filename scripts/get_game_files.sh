@@ -124,7 +124,7 @@ fi
 mv -f "$FOUND" "$TARGET/Animal Well.exe"        # move, not copy: one copy of the game file only
 clean_download                                  # and remove the rest of the download folder
 defaults write local.animalwellloader ExePath "$TARGET/Animal Well.exe"
-say_status done
+say_status "done"
 echo
 echo "Done: $TARGET/Animal Well.exe"
 echo "The loader app will use it without asking."

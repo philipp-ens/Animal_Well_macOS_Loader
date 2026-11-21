@@ -1,4 +1,5 @@
-# Animal Well Loader x86_64
+# Animal Well Loader
+[Status](#status) | [Requirements](#requirements) | [Installation](#installation) | [Build](#build) | [App-Start](#app-start) | [Save Files](#save-files) | [Steam](#steam) | [Files](#files) | [Disclaimer](#disclaimer)
 
 Runs the Windows version of **ANIMAL WELL** on a Mac, using your own copy of the game.
 
@@ -13,11 +14,18 @@ graphics (Metal), sound, input, save files and Steam.
 Playable from start to finish in my testing: picture, sound, keyboard, controller, saving, Steam achievements and
 the Steam overlay.
 
-| | |
-|---|---|
-| Tested on | Apple Silicon Mac (through Rosetta 2) |
+|               |                                                                                                 |
+|---------------|-------------------------------------------------------------------------------------------------|
+| Tested on     | Apple Silicon Mac (through Rosetta 2)                                                           |
 | Not tested on | Intel Macs. The app is built for Intel processors, so it should run there, but nobody has tried |
-| Game version | Steam build 16245418 (depot 813231, manifest 8951799273146338346) |
+| Game Version  | Steam build 16245418 (depot 813231, manifest 8951799273146338346)                               |
+
+
+| Limitations                                                                                      |
+|--------------------------------------------------------------------------------------------------|
+| Controller rumble, and the controller speaker and haptics the game uses on some pads do not work |
+| Any version of the exe other than the supported one does not work                                |
+| Starting from the game's own Steam library entry does not work                                   |
 
 ## Requirements
 
@@ -26,12 +34,21 @@ the Steam overlay.
 - Apple's command line tools, to build the app: `xcode-select --install`
 - A Steam account that owns ANIMAL WELL or an already existing copy of the game.
 
+## Installation
+
+With this command:
+```bash
+curl -fsSL https://raw.githubusercontent.com/philipp-ens/Animal_Well_macOS_Loader/main/scripts/install.sh | bash
+```
+Or with the package provided in the release. The problem is, it is not trusted by Apple and I am not willing to pay them 99$ so it will be.
+You'll have to run it and then go to Settings -> Privacy & Security, scroll down and allow it to open anyway.
+
 ## Build
 
 Clone the project into a folder. From this folder, run:
 
 ```bash
-bash build_app.sh
+bash scripts/build_app.sh
 ```
 
 This creates `Animal Well x86.app` in the same folder.
@@ -86,12 +103,6 @@ If you really want to turn the Steam overlay off:
 ```bash
 defaults write local.animalwellloader NoOverlay -bool YES
 ```
-
-## What does not work
-
-- Controller rumble, and the controller speaker and haptics the game uses on some pads
-- Any version of the exe other than the supported one
-- Starting from the game's own Steam library entry (see above)  
 
 ## Files
 

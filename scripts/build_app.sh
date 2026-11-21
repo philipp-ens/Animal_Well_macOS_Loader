@@ -1,17 +1,22 @@
 #!/bin/bash
 # Builds "Animal Well Loader_x86_64.app" from game.c, dxbc2msl.c, main.m and get_game_files.sh
-# (run it in the folder that holds them):
-#     bash build_app.sh
+# (it can be started from any folder):
+#     bash scripts/build_app.sh
+# The app is put into the folder of the source files.
 # The app contains only the loader. It holds nothing of the game - at its first start it asks for your own
 # "Animal Well.exe".
 set -e
+HERE="$(cd "$(dirname "$0")" && pwd)"       # this script's folder; get_game_files.sh is next to it
+# The source files are one folder up (in the repository), or next to this script (inside the installer package,
+# which holds all files in one folder).
+if [ -f "$HERE/game.c" ]; then cd "$HERE"; else cd "$HERE/.."; fi
 # The app has two names:
 FILE_NAME="Animal Well Loader_x86_64"   # the file's name: what Finder shows, what you double-click
 NAME="Animal Well"                          # the running program's name: the menu bar, "Quit ...", Activity Monitor
 APP="$FILE_NAME.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp get_game_files.sh "$APP/Contents/Resources/"       # the SteamCMD download, offered at the first start
+cp "$HERE/get_game_files.sh" "$APP/Contents/Resources/"       # the SteamCMD download, offered at the first start
 
 clang -arch x86_64 -O2 -fobjc-arc game.c dxbc2msl.c main.m \
     -framework Cocoa -framework Metal -framework MetalKit -framework QuartzCore \
