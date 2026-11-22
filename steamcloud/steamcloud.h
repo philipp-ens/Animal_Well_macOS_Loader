@@ -60,4 +60,34 @@ int  steamcloud_upload(uint32_t appid, const char *name, const uint8_t *contents
 /* Remove a cloud file. 1 = done. */
 int  steamcloud_delete(uint32_t appid, const char *name, char *error, size_t error_size);
 
+/* ---- keeping one local file and one cloud file the same ----
+ *
+ * steamcloud_sync compares the local file with the cloud file and brings the older side up to date. To know
+ * which side changed it remembers, in "<local file>.cloudsync", the checksum both sides had after the last sync:
+ *
+ *   both the same                          -> nothing to do
+ *   only the cloud changed since then      -> download (the local file is kept as "<local file>.before-download")
+ *   only the local file changed since then -> upload
+ *   one side does not exist                -> it gets the other side's file
+ *   both changed, or nothing is remembered -> a conflict: nothing is touched unless `choice` says which side wins.
+ *                                             If the local file wins, the cloud's version is first saved as
+ *                                             "<local file>.cloud-version"; if the cloud wins, the local file is
+ *                                             kept as "<local file>.before-download".
+ * Call it while connected (steamcloud_connect), and never while the game is running. */
+typedef enum {
+    STEAMCLOUD_SYNC_FAILED,     /* `error` says why; nothing was changed */
+    STEAMCLOUD_IN_SYNC,         /* both sides already were the same */
+    STEAMCLOUD_DOWNLOADED,      /* the local file was replaced by the cloud's */
+    STEAMCLOUD_UPLOADED,        /* the cloud file was replaced by the local one */
+    STEAMCLOUD_CONFLICT         /* both sides changed and `choice` was STEAMCLOUD_ASK: `conflict` is filled in */
+} steamcloud_sync_result;
+typedef enum { STEAMCLOUD_ASK, STEAMCLOUD_KEEP_LOCAL, STEAMCLOUD_KEEP_CLOUD } steamcloud_choice;
+typedef struct {
+    uint64_t local_time, cloud_time;    /* when each side was last changed, seconds since 1970: for asking the user */
+} steamcloud_conflict;
+
+steamcloud_sync_result steamcloud_sync(uint32_t appid, const char *cloud_name, const char *local_file, uint32_t platforms,
+                                       steamcloud_choice choice, steamcloud_conflict *conflict,
+                                       char *error, size_t error_size);
+
 #endif

@@ -14,6 +14,11 @@
  *   ./steamcloud_tool upload-test                upload a small throwaway file next to the save, download it back,
  *                                                delete it again - the save itself is not touched
  *   ./steamcloud_tool upload <file>              REPLACE ANIMAL WELL's cloud save with <file>
+ *   ./steamcloud_tool sync <file> [keep-local|keep-cloud]
+ *                                                bring <file> and ANIMAL WELL's cloud save in line (see steamcloud.h);
+ *                                                on a conflict nothing happens unless you say which side wins
+ *   ./steamcloud_tool delete --name <cloud name> remove one cloud file
+ * upload, download and sync take  --name <cloud name>  to work on another cloud file than the save (for tests).
  *   ./steamcloud_tool signout                    forget the saved login
  * Set the environment variable STEAMCLOUD_VERBOSE=1 to see whether a download came zipped.
  */
@@ -74,6 +79,16 @@ static void show_qr(const char *address, void *context) {
 
 int main(int argc, char **argv) {
     @autoreleasepool {
+        const char *cloud_name = SAVE_NAME;
+        BOOL name_given = NO;
+        for (int i = 1; i + 1 < argc; i++)
+            if (!strcmp(argv[i], "--name")) {           /* take "--name <cloud name>" out of the arguments */
+                cloud_name = argv[i + 1];
+                name_given = YES;
+                memmove(&argv[i], &argv[i + 2], (size_t)(argc - i - 2) * sizeof *argv);
+                argc -= 2;
+                break;
+            }
         const char *command = argc > 1 ? argv[1] : "";
         char error[512] = "", account[256] = "";
         if (!strcmp(command, "signin")) {
@@ -114,7 +129,7 @@ int main(int argc, char **argv) {
             if (!steamcloud_connect(error, sizeof error)) { printf("could not connect: %s\n", error); return 1; }
             printf("connected and logged on\n");
             size_t size = 0;
-            uint8_t *contents = steamcloud_download(ANIMAL_WELL, SAVE_NAME, &size, error, sizeof error);
+            uint8_t *contents = steamcloud_download(ANIMAL_WELL, cloud_name, &size, error, sizeof error);
             steamcloud_disconnect();
             if (!contents) { printf("download failed: %s\n", error); return 1; }
             NSData *data = [NSData dataWithBytesNoCopy:contents length:size freeWhenDone:YES];
@@ -163,12 +178,43 @@ int main(int argc, char **argv) {
             if (!save || !changed) { printf("cannot read %s\n", argv[2]); return 1; }
             if (!steamcloud_connect(error, sizeof error)) { printf("could not connect: %s\n", error); return 1; }
             printf("connected and logged on\n");
-            int ok = steamcloud_upload(ANIMAL_WELL, SAVE_NAME, save.bytes, save.length, (uint64_t)changed.timeIntervalSince1970,
+            int ok = steamcloud_upload(ANIMAL_WELL, cloud_name, save.bytes, save.length, (uint64_t)changed.timeIntervalSince1970,
                                        STEAMCLOUD_WINDOWS, error, sizeof error);
             steamcloud_disconnect();
             if (!ok) { printf("upload failed: %s\n", error); return 1; }
-            printf("uploaded %zu bytes as the cloud save\n  sha1 %s\n", (size_t)save.length, sha1_hex(save).UTF8String);
+            printf("uploaded %zu bytes as \"%s\"\n  sha1 %s\n", (size_t)save.length, cloud_name, sha1_hex(save).UTF8String);
             return 0;
+        }
+        if (!strcmp(command, "sync") && argc > 2) {
+            steamcloud_choice choice = argc > 3 && !strcmp(argv[3], "keep-local") ? STEAMCLOUD_KEEP_LOCAL
+                                     : argc > 3 && !strcmp(argv[3], "keep-cloud") ? STEAMCLOUD_KEEP_CLOUD : STEAMCLOUD_ASK;
+            if (!steamcloud_connect(error, sizeof error)) { printf("could not connect: %s\n", error); return 1; }
+            steamcloud_conflict conflict = { 0 };
+            steamcloud_sync_result result = steamcloud_sync(ANIMAL_WELL, cloud_name, argv[2], STEAMCLOUD_WINDOWS, choice, &conflict, error, sizeof error);
+            steamcloud_disconnect();
+            switch (result) {
+                case STEAMCLOUD_SYNC_FAILED: printf("sync failed: %s\n", error); return 1;
+                case STEAMCLOUD_IN_SYNC:     printf("in sync: nothing to do\n"); return 0;
+                case STEAMCLOUD_DOWNLOADED:  printf("downloaded: the local file now is the cloud's\n"); return 0;
+                case STEAMCLOUD_UPLOADED:    printf("uploaded: the cloud file now is the local one\n"); return 0;
+                case STEAMCLOUD_CONFLICT: {
+                    char local_date[32], cloud_date[32];
+                    time_t local_time = (time_t)conflict.local_time, cloud_time = (time_t)conflict.cloud_time;
+                    strftime(local_date, sizeof local_date, "%Y-%m-%d %H:%M:%S", localtime(&local_time));
+                    strftime(cloud_date, sizeof cloud_date, "%Y-%m-%d %H:%M:%S", localtime(&cloud_time));
+                    printf("conflict: both sides changed. Nothing was touched.\n  local file changed %s\n  cloud file changed %s\n"
+                           "  run again with keep-local or keep-cloud\n", local_date, cloud_date);
+                    return 3;
+                }
+            }
+        }
+        if (!strcmp(command, "delete")) {
+            if (!name_given) { printf("say which file: delete --name <cloud name>\n"); return 2; }
+            if (!steamcloud_connect(error, sizeof error)) { printf("could not connect: %s\n", error); return 1; }
+            int ok = steamcloud_delete(ANIMAL_WELL, cloud_name, error, sizeof error);
+            steamcloud_disconnect();
+            printf("delete of \"%s\": %s\n", cloud_name, ok ? "ok" : error);
+            return !ok;
         }
         if (!strcmp(command, "unzip") && argc > 3) {
             NSData *zip = [NSData dataWithContentsOfFile:@(argv[2])];
@@ -179,7 +225,7 @@ int main(int argc, char **argv) {
             printf("unpacked %zu bytes, sha1 %s\n", (size_t)plain.length, sha1_hex(plain).UTF8String);
             return 0;
         }
-        printf("usage: steamcloud_tool signin [--qr-png <file>] | status | list | download <file> | upload-test | upload <file> |\n                             zip <file> <zip> | unzip <zip> <file> | signout\n");
+        printf("usage: steamcloud_tool signin [--qr-png <file>] | status | list | download <file> | upload <file> |\n                             sync <file> [keep-local|keep-cloud] | delete --name <cloud name> | upload-test |\n                             zip <file> <zip> | unzip <zip> <file> | signout\n");
         return 2;
     }
 }

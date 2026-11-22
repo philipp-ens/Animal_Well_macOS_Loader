@@ -963,3 +963,102 @@ int steamcloud_delete(uint32_t appid, const char *name, char *error, size_t erro
         return ok;
     }
 }
+
+/* ---------------------------------------------------------------------------------------- syncing */
+
+static NSString *sha1_hex(NSData *data) {
+    unsigned char digest[CC_SHA1_DIGEST_LENGTH];
+    CC_SHA1(data.bytes, (CC_LONG)data.length, digest);
+    NSMutableString *hex = [NSMutableString string];
+    for (int i = 0; i < CC_SHA1_DIGEST_LENGTH; i++) [hex appendFormat:@"%02x", digest[i]];
+    return hex;
+}
+
+steamcloud_sync_result steamcloud_sync(uint32_t appid, const char *cloud_name, const char *local_file, uint32_t platforms,
+                                       steamcloud_choice choice, steamcloud_conflict *conflict,
+                                       char *error, size_t error_size) {
+    @autoreleasepool {
+        if (!connection) { set_error(error, error_size, @"not connected"); return STEAMCLOUD_SYNC_FAILED; }
+        NSFileManager *disk = [NSFileManager defaultManager];
+        NSString *path = @(local_file);
+        NSString *memory_path = [path stringByAppendingString:@".cloudsync"];   /* the checksum both sides had after the last sync */
+
+        /* the local side */
+        NSData *local = [NSData dataWithContentsOfFile:path];
+        NSString *local_sha = local ? sha1_hex(local) : nil;
+        NSDate *local_changed = [disk attributesOfItemAtPath:path error:nil].fileModificationDate;
+        NSString *remembered = [[NSString stringWithContentsOfFile:memory_path encoding:NSUTF8StringEncoding error:nil]
+                                   stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (remembered.length != 40) remembered = nil;
+
+        /* the cloud side: the listing has the checksum, so nothing needs downloading just to compare */
+        enum { MAX_FILES = 512 };
+        steamcloud_file *files = calloc(MAX_FILES, sizeof *files);
+        int count = steamcloud_list(appid, files, MAX_FILES, error, error_size);
+        NSString *cloud_sha = nil;
+        uint64_t cloud_time = 0;
+        for (int i = 0; i < count && i < MAX_FILES; i++)
+            if (!strcmp(files[i].name, cloud_name)) { cloud_sha = @(files[i].sha1); cloud_time = files[i].time; }
+        free(files);
+        if (count < 0) return STEAMCLOUD_SYNC_FAILED;
+
+        /* which way? */
+        BOOL upload = NO, download = NO, was_conflict = NO;
+        if (!local && !cloud_sha) return STEAMCLOUD_IN_SYNC;            /* no file on either side: nothing to sync yet */
+        else if (!cloud_sha) upload = YES;
+        else if (!local) download = YES;
+        else if ([local_sha isEqualToString:cloud_sha]) {
+            [local_sha writeToFile:memory_path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            return STEAMCLOUD_IN_SYNC;
+        }
+        else if ([local_sha isEqualToString:remembered]) download = YES;       /* only the cloud changed */
+        else if ([cloud_sha isEqualToString:remembered]) upload = YES;         /* only the local file changed */
+        else {
+            was_conflict = YES;
+            if (choice == STEAMCLOUD_ASK) {
+                if (conflict) {
+                    conflict->local_time = (uint64_t)local_changed.timeIntervalSince1970;
+                    conflict->cloud_time = cloud_time;
+                }
+                return STEAMCLOUD_CONFLICT;
+            }
+            upload = choice == STEAMCLOUD_KEEP_LOCAL;
+            download = !upload;
+        }
+
+        if (download || was_conflict) {                 /* in a conflict the cloud's version is fetched either way: to use it or to keep it */
+            size_t size = 0;
+            uint8_t *bytes = steamcloud_download(appid, cloud_name, &size, error, error_size);
+            if (!bytes) return STEAMCLOUD_SYNC_FAILED;
+            NSData *cloud = [NSData dataWithBytesNoCopy:bytes length:size freeWhenDone:YES];
+            if (upload) {                               /* the local file wins: keep what the cloud had */
+                if (![cloud writeToFile:[path stringByAppendingString:@".cloud-version"] atomically:YES]) {
+                    set_error(error, error_size, @"could not keep a copy of the cloud's version; nothing was uploaded");
+                    return STEAMCLOUD_SYNC_FAILED;
+                }
+            } else {
+                if (local) {                            /* keep what is about to be replaced */
+                    NSString *kept = [path stringByAppendingString:@".before-download"];
+                    [disk removeItemAtPath:kept error:nil];
+                    if (![disk copyItemAtPath:path toPath:kept error:nil]) {
+                        set_error(error, error_size, @"could not keep a copy of the local file; nothing was replaced");
+                        return STEAMCLOUD_SYNC_FAILED;
+                    }
+                }
+                if (![cloud writeToFile:path atomically:YES]) {
+                    set_error(error, error_size, @"could not write the downloaded file");
+                    return STEAMCLOUD_SYNC_FAILED;
+                }
+                /* give it the time it was changed, not the time of the download */
+                [disk setAttributes:@{ NSFileModificationDate: [NSDate dateWithTimeIntervalSince1970:cloud_time] } ofItemAtPath:path error:nil];
+                [sha1_hex(cloud) writeToFile:memory_path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+                return STEAMCLOUD_DOWNLOADED;
+            }
+        }
+        if (!steamcloud_upload(appid, cloud_name, local.bytes, local.length, (uint64_t)local_changed.timeIntervalSince1970,
+                               platforms, error, error_size))
+            return STEAMCLOUD_SYNC_FAILED;
+        [local_sha writeToFile:memory_path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        return STEAMCLOUD_UPLOADED;
+    }
+}
