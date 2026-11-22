@@ -49,4 +49,15 @@ int  steamcloud_list(uint32_t appid, steamcloud_file *files, int max_files, char
  * against Steam's checksum, and their length in *size; NULL on failure. Release the memory with free(). */
 uint8_t *steamcloud_download(uint32_t appid, const char *name, size_t *size, char *error, size_t error_size);
 
+/* Upload a file: it replaces the cloud file of that name, or becomes a new one. 1 = Steam has it.
+ *   time       when the contents were last changed, seconds since 1970 (the file's modification time)
+ *   platforms  which systems Steam syncs the file to - for a Windows game's save: STEAMCLOUD_WINDOWS */
+#define STEAMCLOUD_WINDOWS        1u
+#define STEAMCLOUD_ALL_PLATFORMS  0xffffffffu
+int  steamcloud_upload(uint32_t appid, const char *name, const uint8_t *contents, size_t size, uint64_t time,
+                       uint32_t platforms, char *error, size_t error_size);
+
+/* Remove a cloud file. 1 = done. */
+int  steamcloud_delete(uint32_t appid, const char *name, char *error, size_t error_size);
+
 #endif

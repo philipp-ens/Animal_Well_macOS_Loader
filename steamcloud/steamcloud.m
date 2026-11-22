@@ -513,6 +513,8 @@ static NSData *machine_id(void);
     pb_number(logon, 5, 1771);                  /* client_package_version: what SteamKit sends */
     pb_string(logon, 6, @"english");            /* client_language */
     pb_number(logon, 7, OS_TYPE_MAC);           /* client_os_type */
+    pb_number(logon, 8, 1);                     /* should_remember_password: "keep this login valid after the session
+                                                   ends". Without it Steam cancels the refresh token once we log off. */
     pb_bytes(logon, 30, machine_id());
     if (account.length) pb_string(logon, 50, account);      /* account_name */
     pb_number(logon, 82, 9);                    /* eresult_sentryfile: 9 = "no such file", an old login scheme we do not use */
@@ -689,6 +691,10 @@ NSData *steamcloud_unzip(NSData *zip, NSString **problem) {
     size_t header = U32(entry + 42);                    /* where the file's own header is */
     if (header + 30 > length || U32(header) != 0x04034b50) return nil;
     size_t data = header + 30 + U16(header + 26) + U16(header + 28);       /* after its name and extra field */
+    if (getenv("STEAMCLOUD_VERBOSE"))
+        fprintf(stderr, "zip: entry \"%.*s\", method %u, flags 0x%x, made by version %u, %u -> %u bytes, %u entr%s\n",
+                (int)U16(header + 26), (const char *)bytes + header + 30, method, U16(header + 6), U16(entry + 4),
+                packed_size, plain_size, U16(end + 10), U16(end + 10) == 1 ? "y" : "ies");
     if (data > length || packed_size > length - data) return nil;
     #undef U16
     #undef U32
@@ -758,6 +764,9 @@ uint8_t *steamcloud_download(uint32_t appid, const char *name, size_t *size, cha
         }
 
         /* 3. unpack it if Steam stored it packed, then check that it is what Steam says it is */
+        if (getenv("STEAMCLOUD_VERBOSE"))
+            fprintf(stderr, "download: %u bytes as stored, %u bytes unpacked, got %lu bytes%s\n", stored_size, plain_size,
+                    (unsigned long)contents.length, stored_size != plain_size ? " (zipped)" : " (not zipped)");
         if (stored_size != plain_size) {
             contents = steamcloud_unzip(contents, &problem);
             if (!contents) { set_error(error, error_size, problem); return NULL; }
@@ -772,5 +781,185 @@ uint8_t *steamcloud_download(uint32_t appid, const char *name, size_t *size, cha
         memcpy(out, contents.bytes, contents.length);
         *size = contents.length;
         return out;
+    }
+}
+
+/* ---------------------------------------------------------------------------------------- uploading */
+
+/* Pack `plain` the way Steam does for the cloud: a zip archive with one file in it, named "z".
+ * Layout: the file's header, its packed data, the directory (one entry), the end record.
+ * (Not static only so that steamcloud_tool.m can test it.) */
+NSData *steamcloud_zip(NSData *plain) {
+    NSMutableData *packed = [NSMutableData dataWithLength:compressBound((uLong)plain.length)];
+    z_stream z = { .next_in = (Bytef *)plain.bytes, .avail_in = (uInt)plain.length,
+                   .next_out = packed.mutableBytes, .avail_out = (uInt)packed.length };
+    if (deflateInit2(&z, Z_BEST_COMPRESSION, Z_DEFLATED, -MAX_WBITS, 8, Z_DEFAULT_STRATEGY) != Z_OK) return nil;
+    int result = deflate(&z, Z_FINISH);                 /* negative window bits: bare deflate data, as zip wants it */
+    deflateEnd(&z);
+    if (result != Z_STREAM_END) return nil;
+    packed.length = z.total_out;
+
+    uint32_t checksum = (uint32_t)crc32(0, plain.bytes, (uInt)plain.length);
+    uint32_t packed_size = (uint32_t)packed.length, plain_size = (uint32_t)plain.length;
+    NSMutableData *zip = [NSMutableData data];
+    void (^u16)(uint16_t) = ^(uint16_t v) { [zip appendBytes:&v length:2]; };
+    void (^u32)(uint32_t) = ^(uint32_t v) { [zip appendBytes:&v length:4]; };
+    /* the part that the file's header and its directory entry have in common */
+    void (^common)(void) = ^{
+        u16(20);                        /* version needed to unpack: 2.0 */
+        u16(0);                         /* flags: none */
+        u16(8);                         /* method: deflate */
+        u16(0); u16(0x21);              /* time 0:00, date 1 January 1980 (the format's earliest) */
+        u32(checksum); u32(packed_size); u32(plain_size);
+        u16(1);                         /* length of the name */
+        u16(0);                         /* length of the extra field */
+    };
+    u32(0x04034b50); common();                          /* the file's header ... */
+    [zip appendBytes:"z" length:1];                     /* ... its name ... */
+    [zip appendData:packed];                            /* ... its data */
+    uint32_t directory = (uint32_t)zip.length;
+    u32(0x02014b50); u16(20); common();                 /* the directory entry (made by version 2.0) */
+    u16(0); u16(0); u16(0);                             /* no comment, disk 0, no internal attributes */
+    u32(0);                                             /* no external attributes */
+    u32(0);                                             /* the file's header is at the very start */
+    [zip appendBytes:"z" length:1];
+    uint32_t directory_size = (uint32_t)zip.length - directory;
+    u32(0x06054b50); u16(0); u16(0); u16(1); u16(1);    /* the end record: one disk, one entry */
+    u32(directory_size); u32(directory); u16(0);
+    return zip;
+}
+
+/* Steam wants changes to cloud files wrapped in a "batch": begin, the changes, complete. */
+static uint64_t begin_batch(uint32_t appid, NSString *upload, NSString *delete, NSString **problem) {
+    NSMutableData *request = [NSMutableData data];
+    pb_number(request, 1, appid);
+    pb_string(request, 2, @"Mac");                      /* machine_name */
+    if (upload) pb_string(request, 3, upload);          /* files_to_upload */
+    if (delete) pb_string(request, 4, delete);          /* files_to_delete */
+    uint64_t client_id;
+    arc4random_buf(&client_id, sizeof client_id);
+    pb_number(request, 5, client_id >> 1);              /* client_id: any number of our own */
+    NSData *answer = [connection call:@"Cloud.BeginAppUploadBatch#1" request:request problem:problem];
+    if (!answer) return 0;
+    uint64_t batch = 0;
+    pb_reader r = pb_read(answer);
+    while (pb_next(&r)) if (r.field == 1) batch = r.number;
+    if (!batch) *problem = @"Steam gave no batch number";
+    return batch;
+}
+static void complete_batch(uint32_t appid, uint64_t batch, BOOL ok) {
+    NSMutableData *request = [NSMutableData data];
+    pb_number(request, 1, appid);
+    pb_number(request, 2, batch);
+    pb_number(request, 3, ok ? ERESULT_OK : 2);         /* batch_eresult: 1 = it all worked, 2 = it failed */
+    NSString *ignored;
+    [connection call:@"Cloud.CompleteAppUploadBatchBlocking#1" request:request problem:&ignored];
+}
+
+int steamcloud_upload(uint32_t appid, const char *name, const uint8_t *contents, size_t size, uint64_t time,
+                      uint32_t platforms, char *error, size_t error_size) {
+    @autoreleasepool {
+        if (!connection) { set_error(error, error_size, @"not connected"); return 0; }
+        NSData *plain = [NSData dataWithBytes:contents length:size];
+        unsigned char digest[CC_SHA1_DIGEST_LENGTH];
+        CC_SHA1(plain.bytes, (CC_LONG)plain.length, digest);
+        NSData *sha1 = [NSData dataWithBytes:digest length:sizeof digest];      /* always of the unpacked contents */
+        NSData *stored = steamcloud_zip(plain);
+        if (!stored || stored.length >= plain.length) stored = plain;           /* packing did not help: send it as it is */
+
+        NSString *problem;
+        uint64_t batch = begin_batch(appid, @(name), nil, &problem);
+        if (!batch) { set_error(error, error_size, problem); return 0; }
+
+        /* 1. announce the file. Steam answers with where to send the bytes (one or more "blocks"). */
+        NSMutableData *request = [NSMutableData data];
+        pb_number(request, 1, appid);
+        pb_number(request, 2, stored.length);           /* file_size: as stored */
+        pb_number(request, 3, plain.length);            /* raw_file_size: unpacked - differs when it is zipped */
+        pb_bytes(request, 4, sha1);                     /* file_sha */
+        pb_number(request, 5, time);                    /* time_stamp */
+        pb_string(request, 6, @(name));
+        pb_number(request, 7, platforms);               /* platforms_to_sync */
+        pb_number(request, 13, batch);                  /* upload_batch_id */
+        NSData *answer = [connection call:@"Cloud.ClientBeginFileUpload#1" request:request problem:&problem];
+        if (!answer) { complete_batch(appid, batch, NO); set_error(error, error_size, problem); return 0; }
+
+        /* 2. send the bytes */
+        BOOL sent = YES;
+        pb_reader r = pb_read(answer);
+        while (sent && pb_next(&r)) {
+            if (r.field == 1 && r.number) { problem = @"Steam wants the file encrypted, which this program cannot do"; sent = NO; }
+            if (r.field != 2) continue;                 /* 2: one block */
+            NSString *host = nil, *path = nil;
+            BOOL https = NO;
+            int method = 4;
+            uint64_t offset = 0, length = 0;
+            NSData *explicit_body = nil;
+            NSMutableURLRequest *put = [[NSMutableURLRequest alloc] init];
+            pb_reader b = pb_read(pb_data(&r));
+            while (pb_next(&b)) {
+                if (b.field == 1) host = pb_text(&b);
+                else if (b.field == 2) path = pb_text(&b);
+                else if (b.field == 3) https = b.number != 0;
+                else if (b.field == 4) method = (int)b.number;
+                else if (b.field == 6) offset = b.number;
+                else if (b.field == 7) length = b.number;
+                else if (b.field == 8) explicit_body = pb_data(&b);     /* "send exactly these bytes instead" */
+                else if (b.field == 5) {                                /* a header to send along: { 1: name, 2: value } */
+                    NSString *header_name = @"", *value = @"";
+                    pb_reader h = pb_read(pb_data(&b));
+                    while (pb_next(&h)) {
+                        if (h.field == 1) header_name = pb_text(&h);
+                        else if (h.field == 2) value = pb_text(&h);
+                    }
+                    [put setValue:value forHTTPHeaderField:header_name];
+                }
+            }
+            if (!host.length || offset + length > stored.length) { problem = @"Steam's upload instructions make no sense"; sent = NO; break; }
+            put.URL = [NSURL URLWithString:[NSString stringWithFormat:@"%@://%@%@", https ? @"https" : @"http", host, path ?: @""]];
+            put.HTTPMethod = method == 1 ? @"GET" : method == 3 ? @"POST" : @"PUT";    /* Steam's numbers; uploads use PUT (4) */
+            put.HTTPBody = explicit_body.length ? explicit_body : [stored subdataWithRange:NSMakeRange((NSUInteger)offset, (NSUInteger)length)];
+            NSInteger status;
+            http_request(put, &status, NULL);
+            if (status < 200 || status > 299) {
+                problem = [NSString stringWithFormat:@"sending the file failed (HTTP %ld)", (long)status];
+                sent = NO;
+            }
+        }
+
+        /* 3. tell Steam how it went. Only now does the new file replace the old one. */
+        request = [NSMutableData data];
+        pb_number(request, 1, sent);                    /* transfer_succeeded */
+        pb_number(request, 2, appid);
+        pb_bytes(request, 3, sha1);
+        pb_string(request, 4, @(name));
+        NSString *commit_problem;
+        answer = [connection call:@"Cloud.ClientCommitFileUpload#1" request:request problem:&commit_problem];
+        BOOL committed = NO;
+        if (answer) {
+            r = pb_read(answer);
+            while (pb_next(&r)) if (r.field == 1) committed = r.number != 0;
+        }
+        BOOL ok = sent && committed;
+        complete_batch(appid, batch, ok);
+        if (!ok) set_error(error, error_size, !sent ? problem : commit_problem ?: @"Steam did not accept the uploaded file");
+        return ok;
+    }
+}
+
+int steamcloud_delete(uint32_t appid, const char *name, char *error, size_t error_size) {
+    @autoreleasepool {
+        if (!connection) { set_error(error, error_size, @"not connected"); return 0; }
+        NSString *problem;
+        uint64_t batch = begin_batch(appid, nil, @(name), &problem);
+        if (!batch) { set_error(error, error_size, problem); return 0; }
+        NSMutableData *request = [NSMutableData data];
+        pb_number(request, 1, appid);
+        pb_string(request, 2, @(name));
+        pb_number(request, 4, batch);                   /* upload_batch_id */
+        BOOL ok = [connection call:@"Cloud.ClientDeleteFile#1" request:request problem:&problem] != nil;
+        complete_batch(appid, batch, ok);
+        if (!ok) set_error(error, error_size, problem);
+        return ok;
     }
 }
