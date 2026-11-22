@@ -24,6 +24,8 @@
 #import <Foundation/Foundation.h>
 #import <Security/Security.h>
 #import <CommonCrypto/CommonDigest.h>
+#include <mach-o/dyld.h>
+#include <mach-o/loader.h>
 #include <unistd.h>
 #include <zlib.h>
 #include "steamcloud.h"
@@ -133,35 +135,111 @@ static NSString *pb_text(pb_reader *r) {
 }
 
 /* ---------------------------------------------------------------------------------------- the saved login
- * One Keychain entry: "<account name>\n<refresh token>". */
-static NSDictionary *keychain_query(void) {
-    return @{ (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
-              (__bridge id)kSecAttrService: @"local.animalwellloader.steam",
-              (__bridge id)kSecAttrAccount: @"login" };
+ * One Keychain entry: "<account name>\n<refresh token>".
+ *
+ * macOS lets the program that made a Keychain entry read it without asking. For any other program - and that
+ * includes every new build of this one, because the app has no developer signature - it shows a dialog that
+ * wants the Mac password. Nobody should have to see that dialog. So every build keeps its login in an entry of
+ * its own (named after the build), reads only that one, and removes the entries of other builds where macOS
+ * lets it do so silently. After an update the user signs in again instead. */
+
+/* A name for this build: the identifier the linker stamped into the program. It changes whenever the program
+ * does. */
+static NSString *build_name(void) {
+    const struct mach_header_64 *header = (const struct mach_header_64 *)_dyld_get_image_header(0);     /* 0: the program itself */
+    const struct load_command *command = (const struct load_command *)(header + 1);
+    for (uint32_t i = 0; header && i < header->ncmds; i++) {
+        if (command->cmd == LC_UUID) {
+            const uint8_t *id = ((const struct uuid_command *)command)->uuid;
+            NSMutableString *hex = [NSMutableString string];
+            for (int byte = 0; byte < 16; byte++) [hex appendFormat:@"%02x", id[byte]];
+            return hex;
+        }
+        command = (const struct load_command *)((const char *)command + command->cmdsize);
+    }
+    return @"unknown";
 }
+static NSString *keychain_service(void) { return @"local.animalwellloader.steam"; }
+static NSDictionary *keychain_query(void) {
+    static NSString *account;
+    if (!account) account = [@"login-" stringByAppendingString:build_name()];
+    return @{ (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
+              (__bridge id)kSecAttrService: keychain_service(),
+              (__bridge id)kSecAttrAccount: account };
+}
+
+/* Run Keychain calls with macOS's dialogs switched off for this program: a call that would need one fails
+ * instead. (We only touch our own entry, which never needs one - this is the safety net.) */
+static void without_keychain_dialogs(void (^calls)(void)) {
+    #pragma clang diagnostic push
+    #pragma clang diagnostic ignored "-Wdeprecated-declarations"       /* old calls, but the only ones that do this */
+    Boolean allowed = true;
+    SecKeychainGetUserInteractionAllowed(&allowed);
+    SecKeychainSetUserInteractionAllowed(false);
+    calls();
+    SecKeychainSetUserInteractionAllowed(allowed);
+    #pragma clang diagnostic pop
+}
+
+/* Remove the logins that other builds of this program left behind - those macOS lets go without asking. */
+static void remove_other_builds_logins(void) {
+    NSString *mine = keychain_query()[(__bridge id)kSecAttrAccount];
+    without_keychain_dialogs(^{
+        CFTypeRef found = NULL;
+        NSDictionary *all = @{ (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
+                               (__bridge id)kSecAttrService: keychain_service(),
+                               (__bridge id)kSecMatchLimit: (__bridge id)kSecMatchLimitAll,
+                               (__bridge id)kSecReturnAttributes: @YES };       /* names only, not the secrets */
+        if (SecItemCopyMatching((__bridge CFDictionaryRef)all, &found) != errSecSuccess || !found) return;
+        for (NSDictionary *entry in (__bridge_transfer NSArray *)found) {
+            NSString *account = entry[(__bridge id)kSecAttrAccount];
+            if (![account isKindOfClass:[NSString class]] || [account isEqualToString:mine]) continue;
+            /* The modern call (SecItemDelete) refuses another program's entry unless the user confirms in a
+             * dialog. The older call pair below removes it without one: finding an entry without asking for its
+             * secret needs no permission, and neither does deleting it. */
+            #pragma clang diagnostic push
+            #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+            const char *service = keychain_service().UTF8String, *name = account.UTF8String;
+            SecKeychainItemRef entry_ref = NULL;
+            if (SecKeychainFindGenericPassword(NULL, (UInt32)strlen(service), service, (UInt32)strlen(name), name,
+                                               NULL, NULL, &entry_ref) == errSecSuccess && entry_ref) {
+                SecKeychainItemDelete(entry_ref);
+                CFRelease(entry_ref);
+            }
+            #pragma clang diagnostic pop
+        }
+    });
+}
+
 /* macOS's own words for a Keychain result number */
 static NSString *keychain_problem(OSStatus status) {
     NSString *text = (__bridge_transfer NSString *)SecCopyErrorMessageString(status, NULL);
     return [NSString stringWithFormat:@"%@ (%d)", text ?: @"Keychain error", (int)status];
 }
-/* nil = saved. An entry that is already there is replaced. (macOS lets only the program that made an entry change
- * it without asking; for an entry made by another build of this program it asks the user first.) */
+/* nil = saved (replacing this build's earlier login, if there is one). */
 static NSString *save_login(NSString *account, NSString *token) {
     NSData *value = [[NSString stringWithFormat:@"%@\n%@", account, token] dataUsingEncoding:NSUTF8StringEncoding];
     NSMutableDictionary *item = [keychain_query() mutableCopy];
     item[(__bridge id)kSecAttrLabel] = @"Animal Well Loader - Steam login";
     item[(__bridge id)kSecValueData] = value;
-    OSStatus status = SecItemAdd((__bridge CFDictionaryRef)item, NULL);
-    if (status == errSecDuplicateItem)
-        status = SecItemUpdate((__bridge CFDictionaryRef)keychain_query(),
-                               (__bridge CFDictionaryRef)@{ (__bridge id)kSecValueData: value });
-    return status == errSecSuccess ? nil : keychain_problem(status);
+    __block OSStatus status;
+    without_keychain_dialogs(^{
+        status = SecItemAdd((__bridge CFDictionaryRef)item, NULL);
+        if (status == errSecDuplicateItem)
+            status = SecItemUpdate((__bridge CFDictionaryRef)keychain_query(),
+                                   (__bridge CFDictionaryRef)@{ (__bridge id)kSecValueData: value });
+    });
+    if (status != errSecSuccess) return keychain_problem(status);
+    remove_other_builds_logins();
+    return nil;
 }
 static BOOL load_login(NSString **account, NSString **token) {
     NSMutableDictionary *query = [keychain_query() mutableCopy];
     query[(__bridge id)kSecReturnData] = @YES;
-    CFTypeRef found = NULL;
-    if (SecItemCopyMatching((__bridge CFDictionaryRef)query, &found) != errSecSuccess || !found) return NO;
+    __block CFTypeRef found = NULL;
+    __block OSStatus status;
+    without_keychain_dialogs(^{ status = SecItemCopyMatching((__bridge CFDictionaryRef)query, &found); });
+    if (status != errSecSuccess || !found) return NO;
     NSString *text = [[NSString alloc] initWithData:(__bridge_transfer NSData *)found encoding:NSUTF8StringEncoding];
     NSRange split = [text rangeOfString:@"\n"];
     if (split.location == NSNotFound) return NO;
@@ -178,7 +256,8 @@ int steamcloud_signed_in(char *account_name, size_t size) {
 }
 
 void steamcloud_sign_out(void) {
-    SecItemDelete((__bridge CFDictionaryRef)keychain_query());
+    without_keychain_dialogs(^{ SecItemDelete((__bridge CFDictionaryRef)keychain_query()); });
+    remove_other_builds_logins();
 }
 
 /* ---------------------------------------------------------------------------------------- 1. signing in */
@@ -225,8 +304,12 @@ static NSData *auth_call(NSString *method, NSData *message, NSString **problem) 
     return nil;
 }
 
+static volatile int sign_in_cancelled;
+void steamcloud_cancel_sign_in(void) { sign_in_cancelled = 1; }
+
 int steamcloud_sign_in(steamcloud_qr_fn show_qr, void *context, int timeout_seconds, char *error, size_t error_size) {
     @autoreleasepool {
+        sign_in_cancelled = 0;
         /* "I want to sign in by QR code, as a Steam client on a Mac" */
         NSString *device = @"Animal Well Loader (Mac)";
         NSMutableData *details = [NSMutableData data];
@@ -259,7 +342,10 @@ int steamcloud_sign_in(steamcloud_qr_fn show_qr, void *context, int timeout_seco
         /* ask "approved yet?" until it is, or the time is up */
         NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:timeout_seconds];
         while ([deadline timeIntervalSinceNow] > 0) {
-            usleep((useconds_t)(MAX(1.0f, MIN(interval, 5.0f)) * 1000000));
+            for (int quarter = 0; quarter < (int)(MAX(1.0f, MIN(interval, 5.0f)) * 4); quarter++) {
+                if (sign_in_cancelled) { set_error(error, error_size, @"the sign-in was cancelled"); return 0; }
+                usleep(250000);
+            }
             NSMutableData *poll = [NSMutableData data];
             pb_number(poll, 1, client_id);
             pb_bytes(poll, 2, request_id);
@@ -341,7 +427,7 @@ static NSData *machine_id(void);
     _socket.maximumMessageSize = 32 << 20;
     [_socket resume];
     [self receive];
-    return [_opened wait:10] && _opened.eresult == ERESULT_OK;
+    return [_opened wait:6] && _opened.eresult == ERESULT_OK;
 }
 - (void)URLSession:(NSURLSession *)session webSocketTask:(NSURLSessionWebSocketTask *)task didOpenWithProtocol:(NSString *)protocol {
     _opened.eresult = ERESULT_OK;
@@ -596,7 +682,9 @@ static SteamConnection *connection;
 static NSArray<NSString *> *connection_servers(void) {
     NSURL *address = [NSURL URLWithString:@"https://api.steampowered.com/ISteamDirectory/GetCMListForConnect/v1/?cellid=0&cmtype=websockets&format=json"];
     NSInteger status;
-    NSData *answer = http_request([NSURLRequest requestWithURL:address], &status, NULL);
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:address];
+    request.timeoutInterval = 8;                /* without network this must not hold the program up for long */
+    NSData *answer = http_request(request, &status, NULL);
     NSMutableArray<NSString *> *servers = [NSMutableArray array];
     if (status != 200 || !answer) return servers;
     NSDictionary *json = [NSJSONSerialization JSONObjectWithData:answer options:0 error:nil];
@@ -974,6 +1062,20 @@ static NSString *sha1_hex(NSData *data) {
     return hex;
 }
 
+/* What the cloud has under `cloud_name`: its checksum (nil if there is no such file) and when it was changed.
+ * The listing has both, so nothing needs downloading just to compare. NO = the listing failed. */
+static BOOL cloud_file(uint32_t appid, const char *cloud_name, NSString **sha1, uint64_t *time, char *error, size_t error_size) {
+    enum { MAX_FILES = 512 };
+    steamcloud_file *files = calloc(MAX_FILES, sizeof *files);
+    int count = steamcloud_list(appid, files, MAX_FILES, error, error_size);
+    *sha1 = nil;
+    *time = 0;
+    for (int i = 0; i < count && i < MAX_FILES; i++)
+        if (!strcmp(files[i].name, cloud_name)) { *sha1 = @(files[i].sha1); *time = files[i].time; }
+    free(files);
+    return count >= 0;
+}
+
 steamcloud_sync_result steamcloud_sync(uint32_t appid, const char *cloud_name, const char *local_file, uint32_t platforms,
                                        steamcloud_choice choice, steamcloud_conflict *conflict,
                                        char *error, size_t error_size) {
@@ -991,16 +1093,10 @@ steamcloud_sync_result steamcloud_sync(uint32_t appid, const char *cloud_name, c
                                    stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
         if (remembered.length != 40) remembered = nil;
 
-        /* the cloud side: the listing has the checksum, so nothing needs downloading just to compare */
-        enum { MAX_FILES = 512 };
-        steamcloud_file *files = calloc(MAX_FILES, sizeof *files);
-        int count = steamcloud_list(appid, files, MAX_FILES, error, error_size);
+        /* the cloud side */
         NSString *cloud_sha = nil;
         uint64_t cloud_time = 0;
-        for (int i = 0; i < count && i < MAX_FILES; i++)
-            if (!strcmp(files[i].name, cloud_name)) { cloud_sha = @(files[i].sha1); cloud_time = files[i].time; }
-        free(files);
-        if (count < 0) return STEAMCLOUD_SYNC_FAILED;
+        if (!cloud_file(appid, cloud_name, &cloud_sha, &cloud_time, error, error_size)) return STEAMCLOUD_SYNC_FAILED;
 
         /* which way? */
         BOOL upload = NO, download = NO, was_conflict = NO;
@@ -1060,5 +1156,21 @@ steamcloud_sync_result steamcloud_sync(uint32_t appid, const char *cloud_name, c
             return STEAMCLOUD_SYNC_FAILED;
         [local_sha writeToFile:memory_path atomically:YES encoding:NSUTF8StringEncoding error:nil];
         return STEAMCLOUD_UPLOADED;
+    }
+}
+
+int steamcloud_remember_if_same(uint32_t appid, const char *cloud_name, const char *local_file,
+                                char *error, size_t error_size) {
+    @autoreleasepool {
+        if (!connection) { set_error(error, error_size, @"not connected"); return 0; }
+        NSString *path = @(local_file);
+        NSData *local = [NSData dataWithContentsOfFile:path];
+        NSString *cloud_sha;
+        uint64_t cloud_time;
+        if (!local || !cloud_file(appid, cloud_name, &cloud_sha, &cloud_time, error, error_size)) return 0;
+        NSString *local_sha = sha1_hex(local);
+        if (![local_sha isEqualToString:cloud_sha]) return 0;
+        [local_sha writeToFile:[path stringByAppendingString:@".cloudsync"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        return 1;
     }
 }

@@ -10,7 +10,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* ---- signing in (once; the login is then kept in the macOS Keychain) ---- */
+/* ---- signing in (the login is then kept in the macOS Keychain) ----
+ * The saved login belongs to the build of the program that made it: after an update of the program
+ * steamcloud_signed_in says 0 and the user signs in again. That way macOS never shows its "allow access to the
+ * Keychain?" dialog (see steamcloud.m). */
 
 /* Called with a web address that has to be shown as a QR code for the Steam mobile app (Steam Guard tab,
  * "Scan a QR code"). Steam replaces the address about every half minute: the function is then called again. */
@@ -19,6 +22,9 @@ typedef void (*steamcloud_qr_fn)(const char *address, void *context);
 /* Start a QR sign-in and wait until the user approved it in the Steam mobile app. 1 = signed in and the login
  * saved, 0 = not (timeout, no network, ...). The password is never involved. */
 int  steamcloud_sign_in(steamcloud_qr_fn show_qr, void *context, int timeout_seconds, char *error, size_t error_size);
+
+/* Make a steamcloud_sign_in that is waiting (on another thread) give up; it then returns 0 within a second. */
+void steamcloud_cancel_sign_in(void);
 
 /* 1 if a login is saved; `account_name` (may be NULL) then receives the Steam account name. */
 int  steamcloud_signed_in(char *account_name, size_t account_name_size);
@@ -89,5 +95,11 @@ typedef struct {
 steamcloud_sync_result steamcloud_sync(uint32_t appid, const char *cloud_name, const char *local_file, uint32_t platforms,
                                        steamcloud_choice choice, steamcloud_conflict *conflict,
                                        char *error, size_t error_size);
+
+/* Only look: if the local file and the cloud file are the same right now, remember that (as a sync would) and
+ * return 1; otherwise return 0. Changes neither file, so unlike steamcloud_sync it may be called while the game
+ * is running - used right after a sign-in, so that the first real sync knows where both sides started. */
+int  steamcloud_remember_if_same(uint32_t appid, const char *cloud_name, const char *local_file,
+                                 char *error, size_t error_size);
 
 #endif

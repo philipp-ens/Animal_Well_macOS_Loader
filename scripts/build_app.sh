@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds "Animal Well Loader_x86_64.app" from game.c, dxbc2msl.c, main.m and get_game_files.sh
+# Builds "Animal Well Loader_x86_64.app" from game.c, dxbc2msl.c, main.m, steamcloud.m and get_game_files.sh
 # (it can be started from any folder):
 #     bash scripts/build_app.sh
 # The app is put into the folder of the source files.
@@ -18,9 +18,15 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$HERE/get_game_files.sh" "$APP/Contents/Resources/"       # the SteamCMD download, offered at the first start
 
-clang -arch x86_64 -O2 -fobjc-arc game.c dxbc2msl.c main.m \
+# steamcloud.m and steamcloud.h are in the folder steamcloud/ in the repository, and next to the other files
+# inside the installer package.
+CLOUD=steamcloud
+if [ ! -f "$CLOUD/steamcloud.m" ]; then CLOUD=.; fi
+
+clang -arch x86_64 -O2 -fobjc-arc -I "$CLOUD" game.c dxbc2msl.c main.m "$CLOUD/steamcloud.m" \
     -framework Cocoa -framework Metal -framework MetalKit -framework QuartzCore \
     -framework AudioToolbox -framework GameController \
+    -framework Security -framework CoreImage -lz \
     -o "$APP/Contents/MacOS/$NAME"
 
 # CFBundleName is the name macOS puts in the menu bar; it does not have to match the file's name.

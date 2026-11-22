@@ -17,6 +17,7 @@
  *   ./steamcloud_tool sync <file> [keep-local|keep-cloud]
  *                                                bring <file> and ANIMAL WELL's cloud save in line (see steamcloud.h);
  *                                                on a conflict nothing happens unless you say which side wins
+ *   ./steamcloud_tool same <file>                only look: is <file> the same as the cloud save? If so, remember it
  *   ./steamcloud_tool delete --name <cloud name> remove one cloud file
  * upload, download and sync take  --name <cloud name>  to work on another cloud file than the save (for tests).
  *   ./steamcloud_tool signout                    forget the saved login
@@ -208,6 +209,13 @@ int main(int argc, char **argv) {
                 }
             }
         }
+        if (!strcmp(command, "same") && argc > 2) {
+            if (!steamcloud_connect(error, sizeof error)) { printf("could not connect: %s\n", error); return 1; }
+            int same = steamcloud_remember_if_same(ANIMAL_WELL, cloud_name, argv[2], error, sizeof error);
+            steamcloud_disconnect();
+            printf(same ? "the same: remembered\n" : "not the same (or one side is missing): nothing remembered %s\n", error);
+            return 0;
+        }
         if (!strcmp(command, "delete")) {
             if (!name_given) { printf("say which file: delete --name <cloud name>\n"); return 2; }
             if (!steamcloud_connect(error, sizeof error)) { printf("could not connect: %s\n", error); return 1; }
@@ -225,7 +233,7 @@ int main(int argc, char **argv) {
             printf("unpacked %zu bytes, sha1 %s\n", (size_t)plain.length, sha1_hex(plain).UTF8String);
             return 0;
         }
-        printf("usage: steamcloud_tool signin [--qr-png <file>] | status | list | download <file> | upload <file> |\n                             sync <file> [keep-local|keep-cloud] | delete --name <cloud name> | upload-test |\n                             zip <file> <zip> | unzip <zip> <file> | signout\n");
+        printf("usage: steamcloud_tool signin [--qr-png <file>] | status | list | download <file> | upload <file> |\n                             sync <file> [keep-local|keep-cloud] | same <file> | delete --name <cloud name> |\n                             upload-test |\n                             zip <file> <zip> | unzip <zip> <file> | signout\n");
         return 2;
     }
 }
