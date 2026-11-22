@@ -18,8 +18,8 @@ APP="$FILE_NAME.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$HERE/get_game_files.sh" "$APP/Contents/Resources/"       # the SteamCMD download, offered at the first start
-# The app's icon: icon/icon.icns in the repository (made from icon/icon.png by make_icon.sh), next to the other
-# files inside the installer package. Info.plist below names it.
+# The app's icon: icon/icon.icns in the repository, next to the other files inside the installer package.
+# Info.plist below names it.
 ICON=icon/icon.icns
 if [ ! -f "$ICON" ]; then ICON=icon.icns; fi
 cp "$ICON" "$APP/Contents/Resources/AppIcon.icns"
