@@ -25,7 +25,6 @@
 #import <Security/Security.h>
 #import <CommonCrypto/CommonDigest.h>
 #include <mach-o/dyld.h>
-#include <mach-o/loader.h>
 #include <unistd.h>
 #include <zlib.h>
 #include "steamcloud.h"
@@ -144,26 +143,28 @@ static NSString *pb_text(pb_reader *r) {
  * its own (named after the build), reads only that one, and removes the entries of other builds where macOS
  * lets it do so silently. After an update the user signs in again instead. */
 
-/* A name for this build: the identifier the linker stamped into the program. It changes whenever the program
- * does. */
+/* A name for this build: a fingerprint of the program file itself. It changes exactly when the program does -
+ * which is also when macOS starts treating it as a different program.
+ * (An earlier version asked the system for the identifier of "the first loaded program part". In the app, which
+ * runs as an Intel program through Rosetta, that turned out not to be the app: every build got the same name.) */
 static NSString *build_name(void) {
-    const struct mach_header_64 *header = (const struct mach_header_64 *)_dyld_get_image_header(0);     /* 0: the program itself */
-    const struct load_command *command = (const struct load_command *)(header + 1);
-    for (uint32_t i = 0; header && i < header->ncmds; i++) {
-        if (command->cmd == LC_UUID) {
-            const uint8_t *id = ((const struct uuid_command *)command)->uuid;
-            NSMutableString *hex = [NSMutableString string];
-            for (int byte = 0; byte < 16; byte++) [hex appendFormat:@"%02x", id[byte]];
-            return hex;
-        }
-        command = (const struct load_command *)((const char *)command + command->cmdsize);
-    }
-    return @"unknown";
+    char path[4096];
+    uint32_t size = sizeof path;
+    NSData *program = _NSGetExecutablePath(path, &size) == 0 ? [NSData dataWithContentsOfFile:@(path)] : nil;
+    if (!program.length) return @"unknown";
+    unsigned char digest[CC_SHA1_DIGEST_LENGTH];
+    CC_SHA1(program.bytes, (CC_LONG)program.length, digest);
+    NSMutableString *hex = [NSMutableString string];
+    for (int i = 0; i < 16; i++) [hex appendFormat:@"%02x", digest[i]];
+    return hex;
 }
 static NSString *keychain_service(void) { return @"local.animalwellloader.steam"; }
 static NSDictionary *keychain_query(void) {
     static NSString *account;
-    if (!account) account = [@"login-" stringByAppendingString:build_name()];
+    if (!account) {
+        account = [@"login-" stringByAppendingString:build_name()];
+        if (getenv("STEAMCLOUD_VERBOSE")) fprintf(stderr, "keychain: this build's entry is \"%s\"\n", account.UTF8String);
+    }
     return @{ (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
               (__bridge id)kSecAttrService: keychain_service(),
               (__bridge id)kSecAttrAccount: account };
@@ -217,6 +218,8 @@ static NSString *keychain_problem(OSStatus status) {
     NSString *text = (__bridge_transfer NSString *)SecCopyErrorMessageString(status, NULL);
     return [NSString stringWithFormat:@"%@ (%d)", text ?: @"Keychain error", (int)status];
 }
+static BOOL load_login(NSString **account, NSString **token);
+
 /* nil = saved (replacing this build's earlier login, if there is one). */
 static NSString *save_login(NSString *account, NSString *token) {
     NSData *value = [[NSString stringWithFormat:@"%@\n%@", account, token] dataUsingEncoding:NSUTF8StringEncoding];
@@ -232,6 +235,9 @@ static NSString *save_login(NSString *account, NSString *token) {
     });
     if (status != errSecSuccess) return keychain_problem(status);
     remove_other_builds_logins();
+    /* make sure it really is there for us: a login that was "saved" but cannot be read back is no login */
+    NSString *saved_token;
+    if (!load_login(NULL, &saved_token) || ![saved_token isEqualToString:token]) return @"the Keychain did not give the saved login back";
     return nil;
 }
 static BOOL load_login(NSString **account, NSString **token) {
@@ -247,6 +253,22 @@ static BOOL load_login(NSString **account, NSString **token) {
     if (account) *account = [text substringToIndex:split.location];
     if (token) *token = [text substringFromIndex:split.location + 1];
     return YES;
+}
+
+/* Every sign-in adds an entry to the account's list of devices (Steam Guard). So that the list does not grow
+ * with each new sign-in, the next sign-in tells Steam which login it replaces. For that the saved login's number
+ * is remembered - not in the Keychain (a new build cannot read the old build's entry there) but in the loader's
+ * settings: the number alone is of no use to anyone. It is learned at the first logon with a login (Steam says
+ * which login a request came from) and forgotten once a new sign-in has replaced that login. */
+#define SETTINGS CFSTR("local.animalwellloader")
+static uint64_t remembered_login_number(void) {
+    NSString *text = (__bridge_transfer NSString *)CFPreferencesCopyAppValue(CFSTR("SteamLoginNumber"), SETTINGS);
+    return [text isKindOfClass:[NSString class]] ? strtoull(text.UTF8String, NULL, 10) : 0;
+}
+static void remember_login_number(uint64_t number) {            /* 0 = forget it */
+    CFPreferencesSetAppValue(CFSTR("SteamLoginNumber"),
+                             number ? (__bridge CFStringRef)[NSString stringWithFormat:@"%llu", number] : NULL, SETTINGS);
+    CFPreferencesAppSynchronize(SETTINGS);
 }
 
 int steamcloud_signed_in(char *account_name, size_t size) {
@@ -341,6 +363,7 @@ int steamcloud_sign_in(steamcloud_qr_fn show_qr, void *context, int timeout_seco
         show_qr(address.UTF8String, context);
 
         /* ask "approved yet?" until it is, or the time is up */
+        uint64_t replaces = remembered_login_number();      /* the login this sign-in takes the place of, if we know one */
         NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:timeout_seconds];
         while ([deadline timeIntervalSinceNow] > 0) {
             for (int quarter = 0; quarter < (int)(MAX(1.0f, MIN(interval, 5.0f)) * 4); quarter++) {
@@ -350,7 +373,9 @@ int steamcloud_sign_in(steamcloud_qr_fn show_qr, void *context, int timeout_seco
             NSMutableData *poll = [NSMutableData data];
             pb_number(poll, 1, client_id);
             pb_bytes(poll, 2, request_id);
+            if (replaces) pb_fixed64(poll, 3, replaces);    /* token_to_revoke: "cancel that login when you issue the new one" */
             answer = auth_call(@"PollAuthSessionStatus", poll, &problem);
+            if (!answer && replaces) { replaces = 0; continue; }       /* in case Steam does not like the number: go on without it */
             if (!answer) { set_error(error, error_size, problem); return 0; }
             NSString *refresh_token = nil, *account = nil;
             r = pb_read(answer);
@@ -366,6 +391,7 @@ int steamcloud_sign_in(steamcloud_qr_fn show_qr, void *context, int timeout_seco
                     set_error(error, error_size, [@"signed in, but the login could not be saved in the Keychain: " stringByAppendingString:not_saved]);
                     return 0;
                 }
+                remember_login_number(0);                   /* the old login is replaced; the new one's number is learned at its first logon */
                 return 1;
             }
         }
@@ -744,8 +770,33 @@ static void renew_login_if_due(SteamConnection *steam, NSString *account, NSStri
         while (pb_next(&r)) if (r.field == 2) fresh = pb_text(&r);
     }
     BOOL saved = fresh.length && ![fresh isEqualToString:token] && !save_login(account, fresh);
+    if (saved) remember_login_number(0);                /* a new login: its number is learned at the next logon */
     if (verbose) fprintf(stderr, "login renewal: %s\n", !answer ? problem.UTF8String :
                          saved ? "Steam issued a new login; it is saved" : "Steam answered, without a new login (not due yet)");
+}
+
+/* Learn the number of the login we are logged on with (see remembered_login_number): Steam's list of the
+ * account's logins says which one the request came from. With STEAMCLOUD_VERBOSE=1 it also prints how many
+ * logins of this program the account has - for testing that a new sign-in replaces the old one. */
+static void learn_login_number(SteamConnection *steam) {
+    BOOL verbose = getenv("STEAMCLOUD_VERBOSE") != NULL;
+    if (remembered_login_number() && !verbose) return;
+    NSString *problem;
+    NSData *answer = [steam call:@"Authentication.EnumerateTokens#1" request:[NSData data] problem:&problem];
+    if (!answer) { if (verbose) fprintf(stderr, "logins: could not list them - %s\n", problem.UTF8String); return; }
+    uint64_t this_one = 0;
+    int all = 0, ours = 0;
+    pb_reader r = pb_read(answer);
+    while (pb_next(&r)) {
+        if (r.field == 2) this_one = r.number;          /* requesting_token */
+        if (r.field != 1) continue;                     /* 1: one login { 2: its description, ... } */
+        all++;
+        pb_reader t = pb_read(pb_data(&r));
+        while (pb_next(&t)) if (t.field == 2 && [pb_text(&t) isEqualToString:@"Animal Well Loader (Mac)"]) ours++;
+    }
+    if (this_one) remember_login_number(this_one);
+    if (verbose) fprintf(stderr, "logins: the account has %d, of which %d are \"Animal Well Loader (Mac)\"%s\n", all, ours,
+                         this_one ? "" : "; Steam did not say which one this is");
 }
 
 int steamcloud_connect(char *error, size_t error_size) {
@@ -761,6 +812,7 @@ int steamcloud_connect(char *error, size_t error_size) {
             if (![attempt open:servers[i]]) { [attempt close]; continue; }
             if ([attempt logOnAs:account token:token problem:&problem]) {
                 connection = attempt;
+                learn_login_number(attempt);
                 renew_login_if_due(attempt, account, token);
                 return 1;
             }
@@ -1399,14 +1451,17 @@ int steamcloud_sign_in_password(const char *account_name, const char *password, 
             if (stop) { if (!problem) problem = @"the sign-in was cancelled"; break; }
 
             /* 4. the result */
+            uint64_t replaces = remembered_login_number();  /* the login this sign-in takes the place of, if we know one */
             NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:timeout_seconds];
             problem = @"the sign-in was not confirmed in time";
             while (!signed_in && [deadline timeIntervalSinceNow] > 0) {
                 request = [NSMutableData data];
                 pb_number(request, 1, client_id);
                 pb_bytes(request, 2, request_id);
+                if (replaces) pb_fixed64(request, 3, replaces);     /* token_to_revoke */
                 NSString *poll_problem;
                 answer = [steam call:@"Authentication.PollAuthSessionStatus#1" request:request problem:&poll_problem];
+                if (!answer && replaces) { replaces = 0; continue; }       /* in case Steam does not like the number: go on without it */
                 if (!answer) { problem = poll_problem; break; }
                 NSString *refresh_token = nil, *account = nil;
                 r = pb_read(answer);
@@ -1418,7 +1473,7 @@ int steamcloud_sign_in_password(const char *account_name, const char *password, 
                 if (refresh_token.length) {
                     NSString *not_saved = save_login(account.length ? account : @(account_name), refresh_token);
                     if (not_saved) problem = [@"signed in, but the login could not be saved in the Keychain: " stringByAppendingString:not_saved];
-                    else signed_in = 1;
+                    else { signed_in = 1; remember_login_number(0); }
                     break;
                 }
                 BOOL cancelled = NO;

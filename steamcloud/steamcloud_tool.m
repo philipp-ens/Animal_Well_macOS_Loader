@@ -25,8 +25,9 @@
  *   ./steamcloud_tool delete --name <cloud name> remove one cloud file
  * upload, download and sync take  --name <cloud name>  to work on another cloud file than the save (for tests).
  *   ./steamcloud_tool signout                    forget the saved login
- * Set the environment variable STEAMCLOUD_VERBOSE=1 to see whether a download came zipped and how long the login
- * is still valid; with STEAMCLOUD_RENEW_NOW=1 as well, every connect asks Steam for a fresh login.
+ * Set the environment variable STEAMCLOUD_VERBOSE=1 to see whether a download came zipped, how long the login is
+ * still valid and how many logins of this program the account has; with STEAMCLOUD_RENEW_NOW=1 as well, every
+ * connect asks Steam for a fresh login.
  */
 #import <AppKit/AppKit.h>
 #import <CoreImage/CoreImage.h>
@@ -124,7 +125,7 @@ int main(int argc, char **argv) {
             fflush(stdout);
             if (!fgets(name, sizeof name, stdin)) return 1;
             name[strcspn(name, "\r\n")] = 0;
-            char *password = getpass("Password (not shown while you type): ");
+            char *password = getpass("Password: ");
             int ok = steamcloud_sign_in_password(name, password, confirm_in_terminal, NULL, 300, error, sizeof error);
             memset(password, 0, strlen(password));          /* do not leave it lying in memory */
             if (!ok) { printf("sign-in failed: %s\n", error); return 1; }
