@@ -876,75 +876,6 @@ void game_set_window_size(int width, int height) {      /* engine block +0x89ffa
 int game_wants_fullscreen(void) { return base ? ENGINE[0x89ff6a] != 0 : 0; }   /* written by the options menu */
 int game_wants_quit(void) { return base ? ENGINE[0x89ff6b] != 0 : 0; }         /* written by the main menu's "quit" */
 
-/* ---- the game's own icon ----
- * A Windows program carries its icon in its "resources" (section .rsrc, data directory 2). They form a small
- * tree with three levels: resource type -> name -> language -> the data. Type 14 is an "icon group" (a list of
- * the sizes on offer), type 3 holds the picture of each size.
- * A directory = 16-byte header (count of named entries at +12, of numbered entries at +14), then 8-byte entries
- * {number, offset}; the offset's top bit says "this leads to another directory". */
-static uint32_t rsrc_entry(const uint8_t *rsrc, uint32_t dir, int any, uint32_t number) {
-    uint32_t count = (uint32_t)rd16(rsrc + dir + 12) + rd16(rsrc + dir + 14);
-    for (uint32_t i = 0; i < count; i++) {
-        const uint8_t *entry = rsrc + dir + 16 + i * 8;
-        if (any || rd32(entry) == number) return rd32(entry + 4);
-    }
-    return 0;
-}
-
-static const uint8_t *rsrc_data(const uint8_t *rsrc, uint32_t type, int any_name, uint32_t name, uint32_t *size) {
-    uint32_t t = rsrc_entry(rsrc, 0, 0, type);
-    if (!(t & 0x80000000u)) return NULL;
-    uint32_t n = rsrc_entry(rsrc, t & 0x7fffffffu, any_name, name);
-    if (!(n & 0x80000000u)) return NULL;
-    uint32_t leaf = rsrc_entry(rsrc, n & 0x7fffffffu, 1, 0);        /* whatever language is there */
-    if (!leaf || (leaf & 0x80000000u)) return NULL;
-    *size = rd32(rsrc + leaf + 4);                                  /* data entry: {address in the image, size} */
-    return base + rd32(rsrc + leaf);
-}
-
-/* Returns the largest icon in the exe as width * height * 4 bytes (red, green, blue, alpha; top row first), to be
- * released with free(); NULL if there is none in a form this function reads.
- * The picture is a Windows bitmap without its file header: 40-byte header, colour rows from the bottom up (blue,
- * green, red[, alpha]; each row padded to 4 bytes), then a 1-bit mask in which a set bit means "transparent".
- * The header's height counts both parts, so it is twice the real height. */
-uint8_t *game_icon(int *width, int *height) {
-    if (!base) return NULL;
-    const uint8_t *opt = base + rd32(base + 0x3c) + 24;
-    uint32_t rsrc_rva = rd32(opt + 112 + 2 * 8), group_size = 0, size = 0;
-    if (!rsrc_rva) return NULL;
-    const uint8_t *rsrc = base + rsrc_rva;
-    const uint8_t *group = rsrc_data(rsrc, 14, 1, 0, &group_size);  /* the first icon group = the program's icon */
-    if (!group || group_size < 6) return NULL;
-    int count = rd16(group + 4), best_width = 0, best_number = -1;
-    for (int i = 0; i < count && 6 + (i + 1) * 14 <= (int)group_size; i++) {
-        const uint8_t *entry = group + 6 + i * 14;                  /* {width, height, ..., picture number at +12} */
-        int w = entry[0] ? entry[0] : 256;
-        if (w > best_width) { best_width = w; best_number = rd16(entry + 12); }
-    }
-    if (best_number < 0) return NULL;
-    const uint8_t *dib = rsrc_data(rsrc, 3, 0, (uint32_t)best_number, &size);
-    if (!dib || size < 40 || rd32(dib) != 40 || rd32(dib + 16) != 0) return NULL;   /* plain bitmaps only */
-    int w = (int)rd32(dib + 4), h = (int)rd32(dib + 8) / 2, bpp = rd16(dib + 14);
-    if (w <= 0 || h <= 0 || w > 1024 || h > 1024 || (bpp != 24 && bpp != 32)) return NULL;
-    uint32_t row = ((uint32_t)w * (uint32_t)(bpp / 8) + 3) & ~3u, mask_row = ((uint32_t)w + 31) / 32 * 4;
-    if (size < 40 + (row + mask_row) * (uint32_t)h) return NULL;
-    const uint8_t *colour = dib + 40, *mask = colour + row * (uint32_t)h;
-    uint8_t *out = malloc((size_t)w * (size_t)h * 4);
-    for (int y = 0; y < h; y++) {
-        const uint8_t *src = colour + row * (uint32_t)(h - 1 - y), *bits = mask + mask_row * (uint32_t)(h - 1 - y);
-        for (int x = 0; x < w; x++) {
-            const uint8_t *p = src + x * (bpp / 8);
-            uint8_t *q = out + ((size_t)y * (size_t)w + (size_t)x) * 4;
-            int transparent = (bits[x / 8] >> (7 - x % 8)) & 1;
-            q[0] = p[2]; q[1] = p[1]; q[2] = p[0];
-            q[3] = bpp == 32 ? p[3] : (transparent ? 0 : 255);
-        }
-    }
-    *width = w;
-    *height = h;
-    return out;
-}
-
 #define OBJ(x) ((gfx_object *)(uintptr_t)(x))
 #define PTR(x) ((uint64_t)(uintptr_t)(x))
 
@@ -1240,18 +1171,6 @@ int main(int argc, char **argv) {
            "(%zu bytes of Metal source)\n", n_textures, n_targets, n_blends, n_pipelines, n_cbuffers, shader_count,
            strlen(game_shader_source()));
     if (argc > 7) { FILE *sf = fopen(argv[7], "wb"); fputs(game_shader_source(), sf); fclose(sf); }
-    if (argc > 8) {                                         /* the icon: "width height" and the raw pixels */
-        int iw = 0, ih = 0;
-        uint8_t *icon = game_icon(&iw, &ih);
-        printf("icon: %s, %d x %d\n", icon ? "found" : "NOT FOUND", iw, ih);
-        if (icon) {
-            FILE *jf = fopen(argv[8], "wb");
-            fprintf(jf, "%d %d\n", iw, ih);
-            fwrite(icon, 4, (size_t)iw * (size_t)ih, jf);
-            fclose(jf);
-            free(icon);
-        }
-    }
     for (int i = 0; i < frames; i++) {
         /* press A on the pad for 5 frames once a second; push the stick right in between */
         int a_down = i >= 120 && i % 60 < 5;

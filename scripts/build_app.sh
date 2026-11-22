@@ -1,5 +1,6 @@
 #!/bin/bash
-# Builds "Animal Well Loader_x86_64.app" from game.c, dxbc2msl.c, main.m, steamcloud.m and get_game_files.sh
+# Builds "Animal Well Loader_x86_64.app" from game.c, dxbc2msl.c, main.m, steamcloud.m, get_game_files.sh
+# and the icon
 # (it can be started from any folder):
 #     bash scripts/build_app.sh
 # The app is put into the folder of the source files.
@@ -17,6 +18,11 @@ APP="$FILE_NAME.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$HERE/get_game_files.sh" "$APP/Contents/Resources/"       # the SteamCMD download, offered at the first start
+# The app's icon: icon/icon.icns in the repository (made from icon/icon.png by make_icon.sh), next to the other
+# files inside the installer package. Info.plist below names it.
+ICON=icon/icon.icns
+if [ ! -f "$ICON" ]; then ICON=icon.icns; fi
+cp "$ICON" "$APP/Contents/Resources/AppIcon.icns"
 
 # steamcloud.m and steamcloud.h are in the folder steamcloud/ in the repository, and next to the other files
 # inside the installer package.
@@ -41,6 +47,7 @@ cat > "$APP/Contents/Info.plist" <<EOF
     <key>CFBundleDisplayName</key>          <string>$NAME</string>
     <key>CFBundleIdentifier</key>           <string>local.animalwellloader</string>
     <key>CFBundleExecutable</key>           <string>$NAME</string>
+    <key>CFBundleIconFile</key>             <string>AppIcon</string>
     <key>CFBundlePackageType</key>          <string>APPL</string>
     <key>CFBundleShortVersionString</key>   <string>0.1</string>
     <key>CFBundleVersion</key>              <string>1</string>

@@ -176,7 +176,7 @@ main() {
 
     echo "== step 4 of 4: moving app to Applications =="
     # Accounts that are not administrators may not write to Applications: then the Mac password is needed,
-    # and the app is handed back to this user afterwards (it needs that to put the game's icon on itself).
+    # and the app is handed back to this user afterwards.
     if [ -w /Applications ]; then
         rm -rf "/Applications/$APP"                     # replace an older installation
         ditto "$APP" "/Applications/$APP"

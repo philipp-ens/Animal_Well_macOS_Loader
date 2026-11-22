@@ -17,7 +17,7 @@ trap 'echo "build_pkg.sh STOPPED at line $LINENO - the step just before this mes
 cd "$(dirname "$0")/.."         # the repository's main folder: the source files are there, the scripts in scripts/
 
 # (the package holds them all in one folder, without "scripts/")
-SOURCES="game.c game.h main.m dxbc2msl.c dxbc2msl.h steamcloud/steamcloud.m steamcloud/steamcloud.h
+SOURCES="game.c game.h main.m dxbc2msl.c dxbc2msl.h steamcloud/steamcloud.m steamcloud/steamcloud.h icon/icon.icns
          scripts/get_game_files.sh scripts/build_app.sh"
 for f in $SOURCES; do
     if [ ! -f "$f" ]; then echo "missing: $f"; exit 1; fi
@@ -102,7 +102,7 @@ rm -rf "$DEST/$APP"                                 # replace an older installat
 ditto "$APP" "$DEST/$APP" || exit 1
 
 # Installer runs as "root", so the app would belong to root. Hand it to the person who is installing - the
-# same as if they had dragged it into Applications. The app needs that to put the game's icon on itself.
+# same as if they had dragged it into Applications.
 OWNER=$(stat -f%Su /dev/console 2>/dev/null)
 if [ -n "$OWNER" ] && [ "$OWNER" != root ]; then chown -R "$OWNER" "$DEST/$APP"; fi
 
