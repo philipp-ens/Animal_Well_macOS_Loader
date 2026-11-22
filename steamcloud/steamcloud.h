@@ -45,4 +45,8 @@ typedef struct {
 /* List the cloud files of one game. Returns how many there are (at most max_files are filled in), -1 on failure. */
 int  steamcloud_list(uint32_t appid, steamcloud_file *files, int max_files, char *error, size_t error_size);
 
+/* Download one cloud file (`name` as steamcloud_list gave it). Returns the file's contents, unpacked and checked
+ * against Steam's checksum, and their length in *size; NULL on failure. Release the memory with free(). */
+uint8_t *steamcloud_download(uint32_t appid, const char *name, size_t *size, char *error, size_t error_size);
+
 #endif

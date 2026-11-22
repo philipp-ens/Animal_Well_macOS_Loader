@@ -139,12 +139,23 @@ static NSDictionary *keychain_query(void) {
               (__bridge id)kSecAttrService: @"local.animalwellloader.steam",
               (__bridge id)kSecAttrAccount: @"login" };
 }
-static BOOL save_login(NSString *account, NSString *token) {
-    SecItemDelete((__bridge CFDictionaryRef)keychain_query());
+/* macOS's own words for a Keychain result number */
+static NSString *keychain_problem(OSStatus status) {
+    NSString *text = (__bridge_transfer NSString *)SecCopyErrorMessageString(status, NULL);
+    return [NSString stringWithFormat:@"%@ (%d)", text ?: @"Keychain error", (int)status];
+}
+/* nil = saved. An entry that is already there is replaced. (macOS lets only the program that made an entry change
+ * it without asking; for an entry made by another build of this program it asks the user first.) */
+static NSString *save_login(NSString *account, NSString *token) {
+    NSData *value = [[NSString stringWithFormat:@"%@\n%@", account, token] dataUsingEncoding:NSUTF8StringEncoding];
     NSMutableDictionary *item = [keychain_query() mutableCopy];
     item[(__bridge id)kSecAttrLabel] = @"Animal Well Loader - Steam login";
-    item[(__bridge id)kSecValueData] = [[NSString stringWithFormat:@"%@\n%@", account, token] dataUsingEncoding:NSUTF8StringEncoding];
-    return SecItemAdd((__bridge CFDictionaryRef)item, NULL) == errSecSuccess;
+    item[(__bridge id)kSecValueData] = value;
+    OSStatus status = SecItemAdd((__bridge CFDictionaryRef)item, NULL);
+    if (status == errSecDuplicateItem)
+        status = SecItemUpdate((__bridge CFDictionaryRef)keychain_query(),
+                               (__bridge CFDictionaryRef)@{ (__bridge id)kSecValueData: value });
+    return status == errSecSuccess ? nil : keychain_problem(status);
 }
 static BOOL load_login(NSString **account, NSString **token) {
     NSMutableDictionary *query = [keychain_query() mutableCopy];
@@ -263,8 +274,9 @@ int steamcloud_sign_in(steamcloud_qr_fn show_qr, void *context, int timeout_seco
                 else if (r.field == 6) account = pb_text(&r);
             }
             if (refresh_token.length) {
-                if (!save_login(account ?: @"", refresh_token)) {
-                    set_error(error, error_size, @"signed in, but the login could not be saved in the Keychain");
+                NSString *not_saved = save_login(account ?: @"", refresh_token);
+                if (not_saved) {
+                    set_error(error, error_size, [@"signed in, but the login could not be saved in the Keychain: " stringByAppendingString:not_saved]);
                     return 0;
                 }
                 return 1;
@@ -652,5 +664,113 @@ int steamcloud_list(uint32_t appid, steamcloud_file *files, int max_files, char 
             count++;
         }
         return count;
+    }
+}
+
+/* Steam stores most cloud files packed, as an ordinary zip archive with one file in it. This takes that one
+ * file out. A zip archive ends with a "directory" that says where each file starts and how it is packed, so we
+ * read from the end: end record -> directory entry -> the file's own header -> its data.
+ * (Not static only so that steamcloud_tool.m can test it.) */
+NSData *steamcloud_unzip(NSData *zip, NSString **problem) {
+    const uint8_t *bytes = zip.bytes;
+    size_t length = zip.length;
+    #define U16(at) ((uint32_t)bytes[at] | (uint32_t)bytes[(at) + 1] << 8)
+    #define U32(at) (U16(at) | U16((at) + 2) << 16)
+    *problem = @"the downloaded file is not a zip archive";
+    if (length < 22) return nil;
+    size_t end = length - 22;                           /* the end record: 22 bytes, plus maybe a comment after it */
+    while (U32(end) != 0x06054b50) {
+        if (end == 0 || length - end > 22 + 65535) return nil;
+        end--;
+    }
+    size_t entry = U32(end + 16);                       /* where the directory starts = its first entry */
+    if (entry + 46 > length || U32(entry) != 0x02014b50) return nil;
+    uint32_t method = U16(entry + 10), packed_size = U32(entry + 20), plain_size = U32(entry + 24);
+    size_t header = U32(entry + 42);                    /* where the file's own header is */
+    if (header + 30 > length || U32(header) != 0x04034b50) return nil;
+    size_t data = header + 30 + U16(header + 26) + U16(header + 28);       /* after its name and extra field */
+    if (data > length || packed_size > length - data) return nil;
+    #undef U16
+    #undef U32
+
+    if (method == 0) return [zip subdataWithRange:NSMakeRange(data, packed_size)];      /* stored as it is */
+    *problem = @"the downloaded zip archive uses a packing method this program does not know";
+    if (method != 8) return nil;                        /* 8 = "deflate", what everyone uses */
+    NSMutableData *plain = [NSMutableData dataWithLength:plain_size];
+    z_stream z = { .next_in = (Bytef *)bytes + data, .avail_in = packed_size,
+                   .next_out = plain.mutableBytes, .avail_out = plain_size };
+    *problem = @"the downloaded zip archive is damaged";
+    if (inflateInit2(&z, -MAX_WBITS) != Z_OK) return nil;       /* negative: bare deflate data, no header */
+    int result = inflate(&z, Z_FINISH);
+    inflateEnd(&z);
+    if (result != Z_STREAM_END || z.total_out != plain_size) return nil;
+    *problem = nil;
+    return plain;
+}
+
+uint8_t *steamcloud_download(uint32_t appid, const char *name, size_t *size, char *error, size_t error_size) {
+    @autoreleasepool {
+        if (!connection) { set_error(error, error_size, @"not connected"); return NULL; }
+        /* 1. ask Steam where the file is. The answer is not the file but a one-time web address for it. */
+        NSMutableData *request = [NSMutableData data];
+        pb_number(request, 1, appid);
+        pb_string(request, 2, @(name));
+        NSString *problem;
+        NSData *answer = [connection call:@"Cloud.ClientFileDownload#1" request:request problem:&problem];
+        if (!answer) { set_error(error, error_size, problem); return NULL; }
+
+        uint32_t stored_size = 0, plain_size = 0;
+        BOOL https = NO, encrypted = NO;
+        NSString *host = nil, *path = nil;
+        NSData *sha1 = nil;
+        NSMutableArray<NSArray<NSString *> *> *headers = [NSMutableArray array];
+        pb_reader r = pb_read(answer);
+        while (pb_next(&r)) {
+            if (r.field == 2) stored_size = (uint32_t)r.number;         /* file_size: as stored, maybe packed */
+            else if (r.field == 3) plain_size = (uint32_t)r.number;     /* raw_file_size: unpacked */
+            else if (r.field == 4) sha1 = pb_data(&r);                  /* sha_file: of the unpacked contents */
+            else if (r.field == 7) host = pb_text(&r);
+            else if (r.field == 8) path = pb_text(&r);
+            else if (r.field == 9) https = r.number != 0;
+            else if (r.field == 11) encrypted = r.number != 0;
+            else if (r.field == 10) {                                   /* a header to send along: { 1: name, 2: value } */
+                NSString *header_name = @"", *value = @"";
+                pb_reader h = pb_read(pb_data(&r));
+                while (pb_next(&h)) {
+                    if (h.field == 1) header_name = pb_text(&h);
+                    else if (h.field == 2) value = pb_text(&h);
+                }
+                [headers addObject:@[ header_name, value ]];
+            }
+        }
+        if (!host.length || !path.length) { set_error(error, error_size, @"Steam gave no download address"); return NULL; }
+        if (encrypted) { set_error(error, error_size, @"the cloud file is encrypted, which this program cannot read"); return NULL; }
+
+        /* 2. fetch it */
+        NSString *address = [NSString stringWithFormat:@"%@://%@%@", https ? @"https" : @"http", host, path];
+        NSMutableURLRequest *fetch = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:address]];
+        for (NSArray<NSString *> *header in headers) [fetch setValue:header[1] forHTTPHeaderField:header[0]];
+        NSInteger status;
+        NSData *contents = http_request(fetch, &status, NULL);
+        if (status != 200 || !contents) {
+            set_error(error, error_size, [NSString stringWithFormat:@"the download failed (HTTP %ld)", (long)status]);
+            return NULL;
+        }
+
+        /* 3. unpack it if Steam stored it packed, then check that it is what Steam says it is */
+        if (stored_size != plain_size) {
+            contents = steamcloud_unzip(contents, &problem);
+            if (!contents) { set_error(error, error_size, problem); return NULL; }
+        }
+        unsigned char digest[CC_SHA1_DIGEST_LENGTH];
+        CC_SHA1(contents.bytes, (CC_LONG)contents.length, digest);
+        if (contents.length != plain_size || (sha1.length == sizeof digest && memcmp(sha1.bytes, digest, sizeof digest))) {
+            set_error(error, error_size, @"the downloaded file does not match Steam's size or checksum");
+            return NULL;
+        }
+        uint8_t *out = malloc(contents.length ? contents.length : 1);
+        memcpy(out, contents.bytes, contents.length);
+        *size = contents.length;
+        return out;
     }
 }
