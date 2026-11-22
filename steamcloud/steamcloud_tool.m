@@ -6,11 +6,15 @@
  *
  *   ./steamcloud_tool signin [--qr-png <file>]   sign in by QR code (shown in the terminal; with --qr-png the
  *                                                code is also written to that picture file each time it changes)
+ *   ./steamcloud_tool signin-password            sign in with account name and password, typed into the terminal
+ *                                                (for accounts without the Steam mobile app)
  *   ./steamcloud_tool status                     is a login saved?
  *   ./steamcloud_tool list                       connect, log on, list ANIMAL WELL's cloud files
  *   ./steamcloud_tool download <file>            download ANIMAL WELL's cloud save into <file>
  *   ./steamcloud_tool unzip <zip> <file>         (no Steam needed) unpack a zip the way downloads are unpacked
  *   ./steamcloud_tool zip <file> <zip>           (no Steam needed) pack a file the way uploads are packed
+ *   ./steamcloud_tool encrypt <modulus hex> <exponent hex> <text>
+ *                                                (no Steam needed) encrypt a text the way a password is, as base64
  *   ./steamcloud_tool upload-test                upload a small throwaway file next to the save, download it back,
  *                                                delete it again - the save itself is not touched
  *   ./steamcloud_tool upload <file>              REPLACE ANIMAL WELL's cloud save with <file>
@@ -21,7 +25,8 @@
  *   ./steamcloud_tool delete --name <cloud name> remove one cloud file
  * upload, download and sync take  --name <cloud name>  to work on another cloud file than the save (for tests).
  *   ./steamcloud_tool signout                    forget the saved login
- * Set the environment variable STEAMCLOUD_VERBOSE=1 to see whether a download came zipped.
+ * Set the environment variable STEAMCLOUD_VERBOSE=1 to see whether a download came zipped and how long the login
+ * is still valid; with STEAMCLOUD_RENEW_NOW=1 as well, every connect asks Steam for a fresh login.
  */
 #import <AppKit/AppKit.h>
 #import <CoreImage/CoreImage.h>
@@ -33,6 +38,8 @@
 
 NSData *steamcloud_unzip(NSData *zip, NSString **problem);      /* in steamcloud.m; not part of its interface */
 NSData *steamcloud_zip(NSData *plain);
+NSString *steamcloud_encrypt(NSString *text, NSString *modulus_hex, NSString *exponent_hex);
+int steamcloud_key_test(const char *account_name);
 
 static NSString *sha1_hex(NSData *data) {
     unsigned char digest[CC_SHA1_DIGEST_LENGTH];
@@ -78,6 +85,18 @@ static void show_qr(const char *address, void *context) {
     }
 }
 
+/* Steam Guard, for a sign-in with a password: ask in the terminal */
+static int confirm_in_terminal(steamcloud_confirmation kind, const char *hint, char *code, size_t code_size, void *context) {
+    (void)context;
+    if (kind == STEAMCLOUD_APPROVE_IN_APP) { printf("Approve the sign-in in the Steam mobile app ...\n"); return 1; }
+    if (kind == STEAMCLOUD_APPROVE_BY_EMAIL) { printf("Steam emailed you a link (%s): open it to approve the sign-in ...\n", hint); return 1; }
+    printf(kind == STEAMCLOUD_CODE_FROM_EMAIL ? "Steam emailed you a code. %s\nCode: " : "Type the code from the Steam mobile app (Steam Guard). %s\nCode: ", hint);
+    fflush(stdout);
+    if (!fgets(code, (int)code_size, stdin)) return 0;
+    code[strcspn(code, "\r\n")] = 0;
+    return code[0] != 0;
+}
+
 int main(int argc, char **argv) {
     @autoreleasepool {
         const char *cloud_name = SAVE_NAME;
@@ -95,6 +114,20 @@ int main(int argc, char **argv) {
         if (!strcmp(command, "signin")) {
             if (argc > 3 && !strcmp(argv[2], "--qr-png")) qr_png_path = @(argv[3]);
             if (!steamcloud_sign_in(show_qr, NULL, 240, error, sizeof error)) { printf("sign-in failed: %s\n", error); return 1; }
+            steamcloud_signed_in(account, sizeof account);
+            printf("signed in as %s; the login is saved in the Keychain\n", account);
+            return 0;
+        }
+        if (!strcmp(command, "signin-password")) {
+            char name[256] = "";
+            printf("Steam account name (the login name, not the profile name): ");
+            fflush(stdout);
+            if (!fgets(name, sizeof name, stdin)) return 1;
+            name[strcspn(name, "\r\n")] = 0;
+            char *password = getpass("Password (not shown while you type): ");
+            int ok = steamcloud_sign_in_password(name, password, confirm_in_terminal, NULL, 300, error, sizeof error);
+            memset(password, 0, strlen(password));          /* do not leave it lying in memory */
+            if (!ok) { printf("sign-in failed: %s\n", error); return 1; }
             steamcloud_signed_in(account, sizeof account);
             printf("signed in as %s; the login is saved in the Keychain\n", account);
             return 0;
@@ -137,6 +170,12 @@ int main(int argc, char **argv) {
             if (![data writeToFile:@(argv[2]) atomically:YES]) { printf("could not write %s\n", argv[2]); return 1; }
             printf("downloaded %zu bytes into %s\n  sha1 %s (checked against Steam's)\n", size, argv[2], sha1_hex(data).UTF8String);
             return 0;
+        }
+        if (!strcmp(command, "key-test") && argc > 2) return !steamcloud_key_test(argv[2]);
+        if (!strcmp(command, "encrypt") && argc > 4) {
+            NSString *encrypted = steamcloud_encrypt(@(argv[4]), @(argv[2]), @(argv[3]));
+            printf("%s\n", encrypted ? encrypted.UTF8String : "encrypt failed");
+            return encrypted == nil;
         }
         if (!strcmp(command, "zip") && argc > 3) {
             NSData *plain = [NSData dataWithContentsOfFile:@(argv[2])];
@@ -233,7 +272,7 @@ int main(int argc, char **argv) {
             printf("unpacked %zu bytes, sha1 %s\n", (size_t)plain.length, sha1_hex(plain).UTF8String);
             return 0;
         }
-        printf("usage: steamcloud_tool signin [--qr-png <file>] | status | list | download <file> | upload <file> |\n                             sync <file> [keep-local|keep-cloud] | same <file> | delete --name <cloud name> |\n                             upload-test |\n                             zip <file> <zip> | unzip <zip> <file> | signout\n");
+        printf("usage: steamcloud_tool signin [--qr-png <file>] | signin-password | status | list | download <file> | upload <file> |\n                             sync <file> [keep-local|keep-cloud] | same <file> | delete --name <cloud name> |\n                             upload-test |\n                             zip <file> <zip> | unzip <zip> <file> | signout\n");
         return 2;
     }
 }

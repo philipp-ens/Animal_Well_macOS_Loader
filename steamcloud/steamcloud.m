@@ -41,6 +41,7 @@ enum {
     MSG_LOGON_RESPONSE = 751,
     MSG_LOGGED_OFF = 757,           /* Steam ended the session */
     MSG_LOGON = 5514,
+    MSG_SERVICE_CALL_NO_LOGON = 9804,   /* the same, before logging on: only Steam's sign-in service takes these */
     MSG_HELLO = 9805,
 };
 #define PROTOBUF_FLAG     0x80000000u
@@ -395,6 +396,7 @@ static NSData *machine_id(void);
 @end
 
 @interface SteamConnection : NSObject <NSURLSessionWebSocketDelegate>
+@property int lastResult;           /* Steam's result number of the last call (1 = fine, 0 = no answer) */
 @end
 @implementation SteamConnection {
     NSURLSession *_session;
@@ -406,6 +408,7 @@ static NSData *machine_id(void);
     uint64_t _steamid;                  /* from the logon answer on: who we are ... */
     int32_t _session_id;                /* ... and which session; both go into every later header */
     dispatch_source_t _heartbeat;
+    BOOL _logged_on;
 }
 
 - (instancetype)init {
@@ -517,6 +520,7 @@ static NSData *machine_id(void);
                 else if (r.field == 3) heartbeat_seconds = (int)r.number;
             }
             if (result == ERESULT_OK) {
+                _logged_on = YES;
                 _steamid = steamid;
                 _session_id = session_id;
                 [self startHeartbeat:heartbeat_seconds > 0 ? heartbeat_seconds : 9];
@@ -588,11 +592,17 @@ static NSData *machine_id(void);
     dispatch_resume(_heartbeat);
 }
 
-/* Say hello and log on with the saved login. */
-- (BOOL)logOnAs:(NSString *)account token:(NSString *)token problem:(NSString **)problem {
+/* The first message on a new connection. */
+- (void)hello {
     NSMutableData *hello = [NSMutableData data];
     pb_number(hello, 1, PROTOCOL_VERSION);
     [self send:MSG_HELLO body:hello callName:nil callNumber:0];
+}
+- (uint64_t)steamid { return _steamid; }
+
+/* Say hello and log on with the saved login. */
+- (BOOL)logOnAs:(NSString *)account token:(NSString *)token problem:(NSString **)problem {
+    [self hello];
 
     NSMutableData *logon = [NSMutableData data];
     pb_number(logon, 1, PROTOCOL_VERSION);
@@ -619,7 +629,8 @@ static NSData *machine_id(void);
     return YES;
 }
 
-/* A cloud call: send the request, wait for the answer. nil = it failed (*problem says how). */
+/* A call: send the request, wait for the answer. nil = it failed (*problem says how, and the property
+ * lastResult has Steam's result number). */
 - (NSData *)call:(NSString *)name request:(NSData *)request problem:(NSString **)problem {
     SteamJob *call = [SteamJob new];
     uint64_t number;
@@ -627,12 +638,14 @@ static NSData *machine_id(void);
         number = ++_next_call;
         _calls[@(number)] = call;
     }
-    [self send:MSG_SERVICE_CALL body:request callName:name callNumber:number];
+    [self send:_logged_on ? MSG_SERVICE_CALL : MSG_SERVICE_CALL_NO_LOGON body:request callName:name callNumber:number];
     if (![call wait:40]) {
         @synchronized (self) { [_calls removeObjectForKey:@(number)]; }
         *problem = [NSString stringWithFormat:@"Steam did not answer %@", name];
+        _lastResult = 0;
         return nil;
     }
+    _lastResult = call.eresult;
     if (call.eresult != ERESULT_OK) {
         *problem = call.problem.length ? [NSString stringWithFormat:@"%@: %@ (result %d)", name, call.problem, call.eresult]
                                        : [NSString stringWithFormat:@"%@ failed (result %d)", name, call.eresult];
@@ -644,8 +657,10 @@ static NSData *machine_id(void);
 - (void)close {
     if (_heartbeat) dispatch_source_cancel(_heartbeat);
     _heartbeat = nil;
-    [self send:MSG_LOG_OFF body:nil callName:nil callNumber:0];
-    usleep(300000);                             /* let the goodbye go out */
+    if (_logged_on) {
+        [self send:MSG_LOG_OFF body:nil callName:nil callNumber:0];
+        usleep(300000);                         /* let the goodbye go out */
+    }
     [_socket cancelWithCloseCode:NSURLSessionWebSocketCloseCodeNormalClosure reason:nil];
     [_session invalidateAndCancel];
 }
@@ -695,6 +710,44 @@ static NSArray<NSString *> *connection_servers(void) {
     return servers;
 }
 
+/* How long a login (a "JWT": three base64 parts separated by dots, the middle one a JSON text) is still valid,
+ * in seconds. 0 if that cannot be read. */
+static NSTimeInterval login_seconds_left(NSString *token) {
+    NSArray<NSString *> *parts = [token componentsSeparatedByString:@"."];
+    if (parts.count < 2) return 0;
+    NSString *base64 = [[parts[1] stringByReplacingOccurrencesOfString:@"-" withString:@"+"]
+                                  stringByReplacingOccurrencesOfString:@"_" withString:@"/"];
+    while (base64.length % 4) base64 = [base64 stringByAppendingString:@"="];
+    NSData *json = [[NSData alloc] initWithBase64EncodedString:base64 options:0];
+    NSDictionary *claims = json ? [NSJSONSerialization JSONObjectWithData:json options:0 error:nil] : nil;
+    if (![claims isKindOfClass:[NSDictionary class]] || ![claims[@"exp"] isKindOfClass:[NSNumber class]]) return 0;
+    return [claims[@"exp"] doubleValue] - [NSDate date].timeIntervalSince1970;
+}
+
+/* A login lasts about 7 months. In its last 30 days, ask Steam for a fresh one (as the Steam app does), so that
+ * someone who keeps playing never has to sign in again. Steam decides whether it hands one out.
+ * For testing: STEAMCLOUD_RENEW_NOW=1 asks at every connect, STEAMCLOUD_VERBOSE=1 prints what happened. */
+static void renew_login_if_due(SteamConnection *steam, NSString *account, NSString *token) {
+    BOOL verbose = getenv("STEAMCLOUD_VERBOSE") != NULL, now = getenv("STEAMCLOUD_RENEW_NOW") != NULL;
+    NSTimeInterval left = login_seconds_left(token);
+    if (verbose) fprintf(stderr, "login: valid for %.0f more days\n", left / 86400);
+    if (!now && (left <= 0 || left > 30 * 86400)) return;
+    NSMutableData *request = [NSMutableData data];
+    pb_string(request, 1, token);                       /* refresh_token */
+    pb_fixed64(request, 2, steam.steamid);
+    pb_number(request, 3, 1);                           /* renewal_type: 1 = "give me a new refresh token if it is time" */
+    NSString *problem;
+    NSData *answer = [steam call:@"Authentication.GenerateAccessTokenForApp#1" request:request problem:&problem];
+    NSString *fresh = nil;
+    if (answer) {
+        pb_reader r = pb_read(answer);
+        while (pb_next(&r)) if (r.field == 2) fresh = pb_text(&r);
+    }
+    BOOL saved = fresh.length && ![fresh isEqualToString:token] && !save_login(account, fresh);
+    if (verbose) fprintf(stderr, "login renewal: %s\n", !answer ? problem.UTF8String :
+                         saved ? "Steam issued a new login; it is saved" : "Steam answered, without a new login (not due yet)");
+}
+
 int steamcloud_connect(char *error, size_t error_size) {
     @autoreleasepool {
         if (connection) return 1;
@@ -706,7 +759,11 @@ int steamcloud_connect(char *error, size_t error_size) {
         for (NSUInteger i = 0; i < servers.count && i < 3; i++) {
             SteamConnection *attempt = [SteamConnection new];
             if (![attempt open:servers[i]]) { [attempt close]; continue; }
-            if ([attempt logOnAs:account token:token problem:&problem]) { connection = attempt; return 1; }
+            if ([attempt logOnAs:account token:token problem:&problem]) {
+                connection = attempt;
+                renew_login_if_due(attempt, account, token);
+                return 1;
+            }
             [attempt close];
             break;                              /* the server answered: another one would say the same */
         }
@@ -1172,5 +1229,242 @@ int steamcloud_remember_if_same(uint32_t appid, const char *cloud_name, const ch
         if (![local_sha isEqualToString:cloud_sha]) return 0;
         [local_sha writeToFile:[path stringByAppendingString:@".cloudsync"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
         return 1;
+    }
+}
+
+/* ---------------------------------------------------------------------------------------- signing in with a password
+ * For people without the Steam mobile app. The steps, all as calls over a connection that is not logged on:
+ *   1. ask Steam for its public key for this account
+ *   2. send the account name and the password, encrypted with that key (only Steam can read it)
+ *   3. if the account has Steam Guard: pass on the code the user got by email or reads from the mobile app,
+ *      or wait until they approved in the app
+ *   4. ask for the result: the same refresh token a QR sign-in gives. The password is not kept anywhere. */
+
+static NSData *hex_bytes(NSString *hex) {
+    NSMutableData *bytes = [NSMutableData data];
+    if (hex.length % 2) hex = [@"0" stringByAppendingString:hex];
+    for (NSUInteger i = 0; i + 1 < hex.length; i += 2) {
+        unsigned value = 0;
+        [[NSScanner scannerWithString:[hex substringWithRange:NSMakeRange(i, 2)]] scanHexInt:&value];
+        uint8_t byte = (uint8_t)value;
+        [bytes appendBytes:&byte length:1];
+    }
+    return bytes;
+}
+
+/* Steam gives its key as two big numbers (hex). macOS wants them as a "DER" structure:
+ *   30 <length> { 02 <length> <modulus>  02 <length> <exponent> }       (30 = a sequence, 02 = a whole number) */
+static void der_length(NSMutableData *out, NSUInteger length) {
+    uint8_t bytes[3] = { 0x82, (uint8_t)(length >> 8), (uint8_t)length };
+    if (length < 128) [out appendBytes:&bytes[2] length:1];
+    else [out appendBytes:bytes length:3];
+}
+static NSData *der_number(NSData *big) {
+    const uint8_t *bytes = big.bytes;
+    NSUInteger skip = 0;
+    while (skip + 1 < big.length && bytes[skip] == 0) skip++;           /* no leading zeros ... */
+    NSMutableData *out = [NSMutableData dataWithBytes:"\2" length:1];
+    /* ... except one if the top bit is set (else it would mean "negative"). "!= 0" matters: in an Intel program
+     * a BOOL is a small signed number, and 0x80 put into one is -128, not 1 - which then spoiled the length below. */
+    BOOL pad = (bytes[skip] & 0x80) != 0;
+    der_length(out, big.length - skip + pad);
+    if (pad) [out appendBytes:"\0" length:1];
+    [out appendBytes:bytes + skip length:big.length - skip];
+    return out;
+}
+/* -> the text, RSA-encrypted with Steam's key, as base64. nil if macOS cannot do it.
+ * (Not static only so that steamcloud_tool.m can test it.) */
+NSString *steamcloud_encrypt(NSString *text, NSString *modulus_hex, NSString *exponent_hex) {
+    NSMutableData *numbers = [NSMutableData dataWithData:der_number(hex_bytes(modulus_hex))];
+    [numbers appendData:der_number(hex_bytes(exponent_hex))];
+    NSMutableData *der = [NSMutableData dataWithBytes:"\x30" length:1];
+    der_length(der, numbers.length);
+    [der appendData:numbers];
+    NSDictionary *kind = @{ (__bridge id)kSecAttrKeyType: (__bridge id)kSecAttrKeyTypeRSA,
+                            (__bridge id)kSecAttrKeyClass: (__bridge id)kSecAttrKeyClassPublic };
+    SecKeyRef key = SecKeyCreateWithData((__bridge CFDataRef)der, (__bridge CFDictionaryRef)kind, NULL);
+    if (!key) return nil;
+    NSData *encrypted = (__bridge_transfer NSData *)SecKeyCreateEncryptedData(key, kSecKeyAlgorithmRSAEncryptionPKCS1,
+                            (__bridge CFDataRef)[text dataUsingEncoding:NSUTF8StringEncoding], NULL);
+    CFRelease(key);
+    return [encrypted base64EncodedStringWithOptions:0];
+}
+
+int steamcloud_sign_in_password(const char *account_name, const char *password, steamcloud_confirm_fn confirm, void *context,
+                                int timeout_seconds, char *error, size_t error_size) {
+    @autoreleasepool {
+        sign_in_cancelled = 0;
+        /* a connection of its own, not logged on */
+        SteamConnection *steam = nil;
+        NSArray<NSString *> *servers = connection_servers();
+        for (NSUInteger i = 0; i < servers.count && i < 3 && !steam; i++) {
+            SteamConnection *attempt = [SteamConnection new];
+            if ([attempt open:servers[i]]) steam = attempt;
+            else [attempt close];
+        }
+        if (!steam) { set_error(error, error_size, @"could not connect to Steam (no network?)"); return 0; }
+        [steam hello];
+        int signed_in = 0;
+        NSString *problem = nil;
+        do {                                            /* one pass; "break" = give up with `problem` */
+            /* 1. Steam's key for this account */
+            NSMutableData *request = [NSMutableData data];
+            pb_string(request, 1, @(account_name));
+            NSData *answer = [steam call:@"Authentication.GetPasswordRSAPublicKey#1" request:request problem:&problem];
+            if (!answer) break;
+            NSString *modulus = nil, *exponent = nil;
+            uint64_t key_time = 0;
+            pb_reader r = pb_read(answer);
+            while (pb_next(&r)) {
+                if (r.field == 1) modulus = pb_text(&r);
+                else if (r.field == 2) exponent = pb_text(&r);
+                else if (r.field == 3) key_time = r.number;
+            }
+            NSString *encrypted = modulus.length && exponent.length ? steamcloud_encrypt(@(password), modulus, exponent) : nil;
+            if (!encrypted) { problem = @"could not encrypt the password for Steam"; break; }
+
+            /* 2. account name + encrypted password */
+            NSString *device = @"Animal Well Loader (Mac)";
+            NSMutableData *details = [NSMutableData data];
+            pb_string(details, 1, device);
+            pb_number(details, 2, 1);                       /* platform_type: 1 = Steam client */
+            pb_number(details, 3, (uint64_t)(int64_t)-102); /* os_type: macOS */
+            pb_number(details, 4, 1);                       /* gaming_device_type: 1 = desktop computer */
+            request = [NSMutableData data];
+            pb_string(request, 1, device);
+            pb_string(request, 2, @(account_name));
+            pb_string(request, 3, encrypted);
+            pb_number(request, 4, key_time);                /* encryption_timestamp: which key it was encrypted with */
+            pb_number(request, 5, 1);                       /* remember_login */
+            pb_number(request, 6, 1);                       /* platform_type */
+            pb_number(request, 7, 1);                       /* persistence: 1 = a login that lasts */
+            pb_string(request, 8, @"Client");               /* website_id: what the Steam client says */
+            pb_bytes(request, 9, details);
+            answer = [steam call:@"Authentication.BeginAuthSessionViaCredentials#1" request:request problem:&problem];
+            if (!answer) {
+                if (steam.lastResult == 5) problem = @"Steam says the account name or the password is wrong";
+                else if (steam.lastResult == 84) problem = @"too many sign-in attempts - Steam asks you to wait a while";
+                break;
+            }
+            uint64_t client_id = 0, steamid = 0;
+            NSData *request_id = nil;
+            float interval = 5;
+            int kind = 0, kind_rank = 0;                    /* the way of confirming we take, of those Steam offers */
+            NSString *hint = @"";
+            r = pb_read(answer);
+            while (pb_next(&r)) {
+                if (r.field == 1) client_id = r.number;
+                else if (r.field == 2) request_id = pb_data(&r);
+                else if (r.field == 3) { uint32_t bits = (uint32_t)r.number; memcpy(&interval, &bits, 4); }
+                else if (r.field == 5) steamid = r.number;
+                else if (r.field == 4) {                    /* allowed_confirmations: { 1: kind, 2: a hint such as the email's domain } */
+                    int offered = 0;
+                    NSString *message = @"";
+                    pb_reader c = pb_read(pb_data(&r));
+                    while (pb_next(&c)) {
+                        if (c.field == 1) offered = (int)c.number;
+                        else if (c.field == 2) message = pb_text(&c);
+                    }
+                    /* Steam usually offers several at once - for an account with the mobile app both "type the app's
+                     * code" and "approve in the app", and it sends the approval request to the phone either way. Take
+                     * the one that asks least of the user: approving in the app, then a code from the app, then a code
+                     * by email, then a link by email; "none" (1) only if it is all there is. */
+                    static const int rank[6] = { 0, 1, 3, 4, 5, 2 };
+                    if (offered >= 1 && offered <= 5 && rank[offered] > kind_rank) { kind = offered; kind_rank = rank[offered]; hint = message; }
+                }
+            }
+            if (!request_id) { problem = @"Steam's answer made no sense"; break; }
+
+            /* 3. Steam Guard. kind 1 = the account has none: nothing to do. */
+            BOOL stop = NO;
+            if (kind == STEAMCLOUD_APPROVE_IN_APP || kind == STEAMCLOUD_APPROVE_BY_EMAIL) {
+                if (!confirm(kind, hint.UTF8String, NULL, 0, context)) stop = YES;
+            } else if (kind == STEAMCLOUD_CODE_FROM_EMAIL || kind == STEAMCLOUD_CODE_FROM_APP) {
+                for (int attempt = 0; ; attempt++) {
+                    char code[64] = "";
+                    if (!confirm(kind, attempt ? "That code was not right." : hint.UTF8String, code, sizeof code, context)) { stop = YES; break; }
+                    request = [NSMutableData data];
+                    pb_number(request, 1, client_id);
+                    pb_fixed64(request, 2, steamid);
+                    pb_string(request, 3, [@(code) stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]]);
+                    pb_number(request, 4, kind);            /* code_type */
+                    if ([steam call:@"Authentication.UpdateAuthSessionWithSteamGuardCode#1" request:request problem:&problem]) break;
+                    BOOL wrong_code = steam.lastResult == 65 || steam.lastResult == 88;      /* Steam's numbers for "that code is wrong" */
+                    if (!wrong_code || attempt == 2) { if (wrong_code) problem = @"the Steam Guard code was wrong three times"; stop = YES; break; }
+                }
+            } else if (kind != 1) {
+                problem = @"this account uses a way of confirming a sign-in that this program does not know";
+                stop = YES;
+            }
+            if (stop) { if (!problem) problem = @"the sign-in was cancelled"; break; }
+
+            /* 4. the result */
+            NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:timeout_seconds];
+            problem = @"the sign-in was not confirmed in time";
+            while (!signed_in && [deadline timeIntervalSinceNow] > 0) {
+                request = [NSMutableData data];
+                pb_number(request, 1, client_id);
+                pb_bytes(request, 2, request_id);
+                NSString *poll_problem;
+                answer = [steam call:@"Authentication.PollAuthSessionStatus#1" request:request problem:&poll_problem];
+                if (!answer) { problem = poll_problem; break; }
+                NSString *refresh_token = nil, *account = nil;
+                r = pb_read(answer);
+                while (pb_next(&r)) {
+                    if (r.field == 1) client_id = r.number;
+                    else if (r.field == 3) refresh_token = pb_text(&r);
+                    else if (r.field == 6) account = pb_text(&r);
+                }
+                if (refresh_token.length) {
+                    NSString *not_saved = save_login(account.length ? account : @(account_name), refresh_token);
+                    if (not_saved) problem = [@"signed in, but the login could not be saved in the Keychain: " stringByAppendingString:not_saved];
+                    else signed_in = 1;
+                    break;
+                }
+                BOOL cancelled = NO;
+                for (int quarter = 0; quarter < (int)(MAX(1.0f, MIN(interval, 5.0f)) * 4) && !cancelled; quarter++) {
+                    cancelled = sign_in_cancelled != 0;
+                    usleep(250000);
+                }
+                if (cancelled) { problem = @"the sign-in was cancelled"; break; }
+            }
+        } while (0);
+        [steam close];
+        if (!signed_in) set_error(error, error_size, problem ?: @"the sign-in failed");
+        return signed_in;
+    }
+}
+
+/* A test of the first step of the password sign-in: fetch Steam's key for an account name and encrypt a dummy
+ * text with it. No password is involved and nothing is signed in. (Only for steamcloud_tool.m.) */
+int steamcloud_key_test(const char *account_name) {
+    @autoreleasepool {
+        SteamConnection *steam = nil;
+        NSArray<NSString *> *servers = connection_servers();
+        for (NSUInteger i = 0; i < servers.count && i < 3 && !steam; i++) {
+            SteamConnection *attempt = [SteamConnection new];
+            if ([attempt open:servers[i]]) steam = attempt;
+            else [attempt close];
+        }
+        if (!steam) { printf("could not connect\n"); return 0; }
+        [steam hello];
+        NSMutableData *request = [NSMutableData data];
+        pb_string(request, 1, @(account_name));
+        NSString *problem = nil;
+        NSData *answer = [steam call:@"Authentication.GetPasswordRSAPublicKey#1" request:request problem:&problem];
+        [steam close];
+        if (!answer) { printf("the key request failed: %s (result %d)\n", problem.UTF8String, steam.lastResult); return 0; }
+        printf("answer: %lu bytes; fields:", (unsigned long)answer.length);
+        NSString *modulus = nil, *exponent = nil;
+        pb_reader r = pb_read(answer);
+        while (pb_next(&r)) {
+            printf(" %d(kind %d, %lu bytes)", r.field, r.kind, (unsigned long)r.length);
+            if (r.field == 1) modulus = pb_text(&r);
+            else if (r.field == 2) exponent = pb_text(&r);
+        }
+        printf("\nmodulus: %lu hex digits, exponent: \"%s\"\n", (unsigned long)modulus.length, exponent.UTF8String ?: "(none)");
+        NSString *encrypted = modulus.length && exponent.length ? steamcloud_encrypt(@"a dummy text", modulus, exponent) : nil;
+        printf("encryption: %s\n", encrypted ? "ok" : "FAILED");
+        return encrypted != nil;
     }
 }

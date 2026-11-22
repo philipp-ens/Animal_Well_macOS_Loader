@@ -23,7 +23,24 @@ typedef void (*steamcloud_qr_fn)(const char *address, void *context);
  * saved, 0 = not (timeout, no network, ...). The password is never involved. */
 int  steamcloud_sign_in(steamcloud_qr_fn show_qr, void *context, int timeout_seconds, char *error, size_t error_size);
 
-/* Make a steamcloud_sign_in that is waiting (on another thread) give up; it then returns 0 within a second. */
+/* Sign in with the account name and password instead - for people without the Steam mobile app. The password is
+ * sent to Steam only, encrypted with Steam's own key, and is not kept. 1 = signed in and the login saved.
+ *
+ * An account with Steam Guard needs a second step, for which `confirm` is called:
+ *   STEAMCLOUD_CODE_FROM_EMAIL   Steam emailed a code       -> put it into `code`, return 1 (0 = give up)
+ *   STEAMCLOUD_CODE_FROM_APP     the code the Steam mobile app shows under Steam Guard -> the same
+ *   STEAMCLOUD_APPROVE_IN_APP    the user has to approve the sign-in in the Steam mobile app  -> tell them, return
+ *   STEAMCLOUD_APPROVE_BY_EMAIL  ... or with the link Steam emailed                              1 at once (0 = give up);
+ *                                the function then waits until they did (`code` is NULL here)
+ * `hint` is a short text from Steam (for an email code: where it was sent) or "That code was not right." */
+typedef enum {
+    STEAMCLOUD_CODE_FROM_EMAIL = 2, STEAMCLOUD_CODE_FROM_APP = 3, STEAMCLOUD_APPROVE_IN_APP = 4, STEAMCLOUD_APPROVE_BY_EMAIL = 5
+} steamcloud_confirmation;
+typedef int (*steamcloud_confirm_fn)(steamcloud_confirmation kind, const char *hint, char *code, size_t code_size, void *context);
+int  steamcloud_sign_in_password(const char *account_name, const char *password, steamcloud_confirm_fn confirm, void *context,
+                                 int timeout_seconds, char *error, size_t error_size);
+
+/* Make a sign-in that is waiting (on another thread) give up; it then returns 0 within a second. */
 void steamcloud_cancel_sign_in(void);
 
 /* 1 if a login is saved; `account_name` (may be NULL) then receives the Steam account name. */

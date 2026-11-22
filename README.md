@@ -1,5 +1,5 @@
 # Animal Well Loader
-[Status](#status) | [Requirements](#requirements) | [Installation](#installation) | [Build](#build) | [App-Start](#app-start) | [Save Files](#save-files) | [Steam](#steam) | [Files](#files) | [Disclaimer](#disclaimer)
+[Status](#status) | [Requirements](#requirements) | [Installation](#installation) | [Build](#build) | [App-Start](#app-start) | [Save Files](#save-files) | [Steam Cloud](#steam-cloud) | [Steam](#steam) | [Files](#files) | [Disclaimer](#disclaimer)
 
 Runs the Windows version of **ANIMAL WELL** on a Mac, using your own copy of the game.
 
@@ -7,12 +7,13 @@ This is an unofficial fan project. It is not affiliated with or endorsed by the 
 **This is not the full application. You need to own ANIMAL WELL on Steam or already have a copy of the game.**
 
 The app loads the game's program code from the exe and supplies the parts the game normally gets from Windows:
-graphics (Metal), sound, input, save files and Steam.
+graphics (Metal), sound, input, save files and Steam. It can also keep your save in the Steam Cloud, which the
+Steam app itself does not do for this game on a Mac.
 
 ## Status
 
-Playable from start to finish in my testing: picture, sound, keyboard, controller, saving, Steam achievements and
-the Steam overlay.
+Playable from start to finish in my testing: picture, sound, keyboard, controller, saving, Steam Cloud saves,
+Steam achievements and the Steam overlay.
 
 |               |                                                                                                 |
 |---------------|-------------------------------------------------------------------------------------------------|
@@ -26,7 +27,6 @@ the Steam overlay.
 | Controller rumble, and the controller speaker and haptics the game uses on some pads do not work |
 | Any version of the exe other than the supported one does not work                                |
 | Starting from the game's own Steam library entry does not work                                   |
-| Save Files from and to Steam Cloud do not work                                                   |
 
 ## Requirements
 
@@ -88,6 +88,21 @@ The file has the same format as on Windows, so you can bring your progress along
 Copy it into the folder above before starting the app. The first time the game saves, the app keeps the previous
 file as `AnimalWell.sav.bak`.
 
+You do not have to copy it by hand: the app can keep the save in line with the Steam Cloud, see the next section.
+
+## Steam Cloud
+
+I needed to write my own version of this, the Steam app on a Mac does not sync, because
+the game has no Mac version.
+
+Choose **Steam Cloud Sync…** in the app's menu and sign in to Steam, once:
+
+- **With a QR code** – scan it with the Steam mobile app (Steam Guard tab, "Scan a QR code") and approve. The loader
+  never sees your password.
+- **With your account name and password** – if you do not use the Steam mobile app. The password is sent to Steam
+  only, encrypted with Steam's own key, and is not kept. If your account has Steam Guard, the loader asks for the
+  code.
+
 ## Steam
 
 Steam is optional. If the Steam app is running and logged in when you start Animal Well x86:
@@ -109,9 +124,10 @@ defaults write local.animalwellloader NoOverlay -bool YES
 
 | Location | Contents |
 |---|---|
-| `~/Library/Application Support/Animal Well/` | the game file, the save and its backup, `loader.log` |
+| `~/Library/Application Support/Animal Well/` | the game file, the save and its backups, `AnimalWell.sav.cloudsync` (what the Steam Cloud sync remembers), `loader.log` |
 | `~/.animalwellloader/` | SteamCMD and temporary files of the SteamCMD download. Safe to delete at any time |
 | settings `local.animalwellloader` | the remembered game file and Steam library |
+| Keychain entry `local.animalwellloader.steam` | the Steam sign-in for the Steam Cloud sync |
 
 
 ## Disclaimer
