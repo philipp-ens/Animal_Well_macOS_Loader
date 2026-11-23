@@ -278,6 +278,24 @@ int steamcloud_signed_in(char *account_name, size_t size) {
     return 1;
 }
 
+int steamcloud_other_build_login(void) {
+    NSString *mine = keychain_query()[(__bridge id)kSecAttrAccount];
+    __block int others = 0;
+    without_keychain_dialogs(^{
+        CFTypeRef found = NULL;
+        NSDictionary *all = @{ (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
+                               (__bridge id)kSecAttrService: keychain_service(),
+                               (__bridge id)kSecMatchLimit: (__bridge id)kSecMatchLimitAll,
+                               (__bridge id)kSecReturnAttributes: @YES };       /* names only: needs no permission */
+        if (SecItemCopyMatching((__bridge CFDictionaryRef)all, &found) != errSecSuccess || !found) return;
+        for (NSDictionary *entry in (__bridge_transfer NSArray *)found) {
+            NSString *account = entry[(__bridge id)kSecAttrAccount];
+            if ([account isKindOfClass:[NSString class]] && ![account isEqualToString:mine]) others++;
+        }
+    });
+    return others > 0;
+}
+
 void steamcloud_sign_out(void) {
     without_keychain_dialogs(^{ SecItemDelete((__bridge CFDictionaryRef)keychain_query()); });
     remove_other_builds_logins();
@@ -625,6 +643,7 @@ static NSData *machine_id(void);
     [self send:MSG_HELLO body:hello callName:nil callNumber:0];
 }
 - (uint64_t)steamid { return _steamid; }
+- (int)logonResult { return _logon ? _logon.eresult : 2; }     /* Steam's result number of the last logon, 1 = fine */
 
 /* Say hello and log on with the saved login. */
 - (BOOL)logOnAs:(NSString *)account token:(NSString *)token problem:(NSString **)problem {
@@ -799,9 +818,13 @@ static void learn_login_number(SteamConnection *steam) {
                          this_one ? "" : "; Steam did not say which one this is");
 }
 
+static int login_rejected;              /* see steamcloud_login_rejected */
+int steamcloud_login_rejected(void) { return login_rejected; }
+
 int steamcloud_connect(char *error, size_t error_size) {
     @autoreleasepool {
         if (connection) return 1;
+        login_rejected = 0;
         NSString *account, *token;
         if (!load_login(&account, &token)) { set_error(error, error_size, @"not signed in"); return 0; }
         NSArray<NSString *> *servers = connection_servers();
@@ -816,6 +839,8 @@ int steamcloud_connect(char *error, size_t error_size) {
                 renew_login_if_due(attempt, account, token);
                 return 1;
             }
+            /* 5 = "invalid password", 15 = "access denied" */
+            login_rejected = attempt.logonResult == 5 || attempt.logonResult == 15;
             [attempt close];
             break;                              /* the server answered: another one would say the same */
         }

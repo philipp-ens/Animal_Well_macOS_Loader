@@ -1,6 +1,4 @@
-/* Milestone 12, window half (macOS only): the app. Build it with build_app.sh -> "Animal Well Translator_x86_64.app"
- *
- * New in 12: started without arguments (double-click) it finds everything itself - if it knows no
+/* Started without arguments (double-click) it finds everything itself - if it knows no
  * Animal Well.exe it shows a dialog (choose a file / download with SteamCMD / download with the Steam app's
  * console), checks that the file is the supported version, keeps the save in
  * ~/Library/Application Support/Animal Well/, and looks for Valve's libsteam_api.dylib among your
@@ -922,6 +920,8 @@ static BOOL connect_steam(void) {
 
 static NSString *g_cloudSave;           /* the save file that is kept in line with the cloud; nil = this run does not sync */
 static BOOL g_cloudPostponed;           /* the user answered a conflict with "Not Now": do not ask again in this run */
+static BOOL g_gameRunning;              /* between the game's start and its end: the save file must not be replaced then */
+static void cloud_menu(void);
 
 static NSString *date_text(uint64_t seconds_since_1970) {
     return [NSDateFormatter localizedStringFromDate:[NSDate dateWithTimeIntervalSince1970:seconds_since_1970]
@@ -929,12 +929,48 @@ static NSString *date_text(uint64_t seconds_since_1970) {
                                           timeStyle:NSDateFormatterShortStyle];
 }
 
+/* The sync is "on" from a sign-in until the user signs out in the menu: the account name is kept in the loader's
+ * settings meanwhile. If the sync is on but the sign-in is gone or no longer good, the user did not do that - and
+ * has to be told, or the save would silently stop reaching the Steam Cloud. */
+static NSString *const kCloudOnKey = @"SteamCloudAccount";
+static void cloud_set_on(const char *account) {             /* NULL = off */
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    if (account) [defaults setObject:@(account) forKey:kCloudOnKey];
+    else [defaults removeObjectForKey:kCloudOnKey];
+}
+/* Say once that the sign-in was lost, and offer to sign in again right away. What is left of the old sign-in is
+ * removed and the sync is off from then on, so the message does not come again. */
+static void cloud_tell_signed_out(NSString *why) {
+    printf("Steam Cloud: signed out - %s\n", why.UTF8String);
+    cloud_set_on(NULL);
+    steamcloud_sign_out();
+    NSModalResponse answer = ask(@"You are signed out of Steam",
+        [NSString stringWithFormat:@"%@\n\nYour save is not synced with the Steam Cloud until you sign in again - now, or "
+                                    "later with \"Steam Cloud Sync…\" in the menu. Your save on this Mac is fine.", why],
+        @[ @"Sign In Again…", @"Later" ]);
+    if (answer == NSAlertFirstButtonReturn) cloud_menu();   /* the same dialogs as from the menu */
+}
+
 /* `when` is "start" or "end" (for the log). Whatever goes wrong, the game must still start and end normally. */
 static void cloud_sync(const char *when) {
-    char error[512] = "";
-    if (!g_cloudSave || g_cloudPostponed || !steamcloud_signed_in(NULL, 0)) return;
+    char error[512] = "", account[256] = "";
+    if (!g_cloudSave) return;
+    if (!steamcloud_signed_in(account, sizeof account)) {
+        /* Each build of the loader keeps its sign-in in a Keychain entry of its own (see steamcloud.m): after an
+         * update the sync is still "on" in the settings, or the old build's entry is still there, but this build
+         * has no sign-in. */
+        if ([[NSUserDefaults standardUserDefaults] stringForKey:kCloudOnKey] || steamcloud_other_build_login())
+            cloud_tell_signed_out(@"The loader was updated, and for your safety a new version cannot use the Steam "
+                                   "sign-in of the one before.");
+        return;
+    }
+    cloud_set_on(account);                                  /* also for sign-ins from before this was remembered */
+    if (g_cloudPostponed) return;
     if (!steamcloud_connect(error, sizeof error)) {
         printf("Steam Cloud (%s): not synced - %s\n", when, error);
+        if (steamcloud_login_rejected())
+            cloud_tell_signed_out(@"Steam no longer accepts the saved sign-in. It has run out, or it was removed from "
+                                   "your account's devices (Steam Guard), or the account's password was changed.");
         return;
     }
     steamcloud_conflict conflict = { 0 };
@@ -1119,11 +1155,17 @@ static void cloud_after_sign_in(BOOL signed_in, char *error) {
     }
     char account[256] = "";
     steamcloud_signed_in(account, sizeof account);
+    cloud_set_on(account);
     NSString *title = @"Steam Cloud sync is on";
     NSString *intro = [NSString stringWithFormat:@"Signed in as %s. From now on your save is brought in line with the Steam "
                                                   "Cloud each time the game starts and each time it ends.", account];
     if (!g_cloudSave) { ask(title, intro, @[ @"OK" ]); return; }    /* a test run with a save of its own: no syncing */
-    cloud_first_sync(title, intro);
+    if (g_gameRunning) { cloud_first_sync(title, intro); return; }
+    /* Signed in before the game has started or after it has ended (from the "you are signed out" message): the
+     * ordinary sync does it, as at every start and end. What an earlier sign-in remembered is forgotten here too. */
+    [[NSFileManager defaultManager] removeItemAtPath:[g_cloudSave stringByAppendingString:@".cloudsync"] error:nil];
+    cloud_sync("sign-in");
+    ask(title, intro, @[ @"OK" ]);
 }
 
 /* The sign-in dialog: shows the QR code until the user has approved the sign-in in the Steam mobile app. */
@@ -1259,6 +1301,7 @@ static void cloud_menu(void) {
             @[ @"OK", @"Sign Out" ]);
         if (answer != NSAlertSecondButtonReturn) return;
         steamcloud_sign_out();
+        cloud_set_on(NULL);                                 /* the user's own doing: nothing to tell them later */
         ask(@"Signed out",
             @"The save is no longer synced. Your save on this Mac and the one in the Steam Cloud both stay as they are.\n\n"
              "The sign-in is still listed in your Steam account: to remove it there too, open Steam Guard in the Steam "
@@ -1282,6 +1325,7 @@ static void cloud_menu(void) {
 - (void)applicationWillTerminate:(NSNotification *)notification {
     game_steam_stop();
     for (NSWindow *window in NSApp.windows) [window orderOut:nil];      /* the game is over: no frozen picture while we sync */
+    g_gameRunning = NO;
     cloud_sync("end");
 }
 - (void)steamCloud:(id)sender { cloud_menu(); }
@@ -1468,6 +1512,7 @@ int main(int argc, char **argv) {
         /* load the exe and start the game: this creates all textures, targets and pipelines */
         game_start(exePath.fileSystemRepresentation, savePath ? savePath.fileSystemRepresentation : NULL,
                    WINDOW_W, WINDOW_H);
+        g_gameRunning = YES;
         compile_shaders();
         g_quadBuffer = [g_device newBufferWithBytes:game_fullscreen_quad
                                              length:192

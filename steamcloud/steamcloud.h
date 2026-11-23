@@ -46,6 +46,11 @@ void steamcloud_cancel_sign_in(void);
 /* 1 if a login is saved; `account_name` (may be NULL) then receives the Steam account name. */
 int  steamcloud_signed_in(char *account_name, size_t account_name_size);
 
+/* 1 if the Keychain holds the login of another build of the program - one this build cannot use. Together with
+ * steamcloud_signed_in saying 0 that means: the user was signed in and an update signed them out.
+ * steamcloud_sign_out removes such a login too. */
+int  steamcloud_other_build_login(void);
+
 /* Forget the saved login. (The sign-in stays listed in the account's Steam Guard device list until the user
  * removes it there.) */
 void steamcloud_sign_out(void);
@@ -54,6 +59,9 @@ void steamcloud_sign_out(void);
 
 /* Connect to Steam's network and log on with the saved login. 1 = connected and logged on. */
 int  steamcloud_connect(char *error, size_t error_size);
+/* After steamcloud_connect returned 0: 1 if Steam answered that it no longer accepts the saved login, only a new sign-in helps then; 0 for anything
+ * else (no network, ...). */
+int  steamcloud_login_rejected(void);
 void steamcloud_disconnect(void);
 
 /* ---- cloud files ---- */
