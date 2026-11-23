@@ -95,7 +95,7 @@ You do not have to copy it by hand: the app can keep the save in line with the S
 I needed to write my own version of this, the Steam app on a Mac does not sync, because
 the game has no Mac version.
 
-Choose **Steam Cloud Sync…** in the app's menu and sign in to Steam, once:
+In the game's main menu choose **mods**, then **steam cloud**, and sign in to Steam, once:
 
 - **With a QR code** – scan it with the Steam mobile app (Steam Guard tab, "Scan a QR code") and approve. The loader
   never sees your password.

@@ -6,6 +6,7 @@
 #include <string.h>
 #include "mods.h"
 #include "game_api.h"
+#include "ui.h"
 #include "options/list.h"
 
 uint8_t *mods_image;
@@ -137,48 +138,30 @@ static const uint16_t *MSABI mod_get_text(int id) {
 /* C: what the new entry does */
 static void MSABI menu_entry_chosen(void) { open_menu(SUBMENU_ID); }
 
-/* plain letters -> the game's 16-bit characters */
-static const uint16_t *text16(const char *text) {
-    static uint16_t wide[64];
-    size_t i;
-    for (i = 0; text[i] && i < 63; i++) wide[i] = (uint8_t)text[i];
-    wide[i] = 0;
-    return wide;
-}
+/* D: our menus, once per frame while one is open. 1 = menu_id was ours.
+ *   SUBMENU_ID        the "mods" submenu: the options of options/list.h
+ *   PAGE_ID + i       the page of option i, for options that have one */
+enum { OPTION_COUNT = sizeof mod_options / sizeof *mod_options, PAGE_ID = SUBMENU_ID + 1 };
 
-/* D: the submenu, once per frame while it is open. 1 = menu_id was ours.
- * Its title is placed like "OPTIONS" in the options menu; below it the options of options/list.h, drawn like the
- * main menu's entries: centred, a line apart, the chosen one between the two animated arrows (sprite 0x86,
- * 8 frames, a new one every 4 game frames). menu_row is the chosen option. */
+void mods_close_page(void) { open_menu(SUBMENU_ID); }
+
 static char MSABI submenu_update(void) {
-    enum { COUNT = sizeof mod_options / sizeof *mod_options, FIRST_Y = 60 };
-    if (GAME_INT(MENU_ID) != SUBMENU_ID) return 0;
-    set_color(0xffffffff);
-    push_layer(0xe);
-    set_font(1);
-    draw_text_centered(160, 16, text16("mods"));
-    set_font(0);
-    pop_layer();
-
-    int row = GAME_INT(MENU_ROW);
-    if (menu_down_repeat() && row < COUNT - 1) row++;
-    if (menu_up_repeat() && row > 0) row--;
-    if (row < 0 || row >= COUNT) row = 0;
-    GAME_INT(MENU_ROW) = row;
-
-    int line = *(int16_t *)(current_lang_font() + 0x2000e), arrow = (int)(GAME_INT64(TOTAL_FRAMES) / 4 % 8);
-    for (int i = 0; i < COUNT; i++) {
-        const uint16_t *label = text16(mod_options[i]->label);
-        int width = text_width(label), x = 160 - width / 2, y = FIRST_Y + i * line;
-        if (i == row) {
-            draw_atlas_scaled(x - 10, y + 2, 8, 8, 0x86, arrow);
-            draw_atlas_scaled(x + width + 10, y + 2, -8, 8, 0x86, arrow);
-        }
-        draw_text(x, y, label);
+    int id = GAME_INT(MENU_ID);
+    if (id >= PAGE_ID && id < PAGE_ID + OPTION_COUNT && mod_options[id - PAGE_ID]->page) {
+        mod_options[id - PAGE_ID]->page();
+        return 1;
     }
-
-    if (input_confirm_pressed() && mod_options[row]->chosen) mod_options[row]->chosen();
-    else if (input_cancel_pressed()) open_menu(1);
+    if (id != SUBMENU_ID) return 0;
+    ui_title("mods");
+    const char *labels[OPTION_COUNT];
+    for (int i = 0; i < OPTION_COUNT; i++) labels[i] = mod_options[i]->label;
+    int chosen = ui_options(60, labels, OPTION_COUNT);
+    if (chosen >= 0) {
+        if (mod_options[chosen]->page) open_menu(PAGE_ID + chosen);
+        if (mod_options[chosen]->chosen) mod_options[chosen]->chosen();
+    } else if (input_cancel_pressed()) {
+        open_menu(1);
+    }
     return 1;
 }
 

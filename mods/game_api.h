@@ -23,6 +23,9 @@ extern uint8_t *mods_image;                 /* where the exe is mapped (set by m
 /* a w x h picture of animation frame `frame` of sprite `sprite`; a negative w mirrors it */
 #define draw_atlas_scaled(x, y, w, h, sprite, frame) \
     GAME_FN(0x1a5a0, void, int, int, int, int, uint16_t, int, uint8_t, uint8_t, uint8_t)(x, y, w, h, sprite, frame, 0, 0, 0)
+#define push_color(argb)                GAME_FN(0x17de0, void, uint32_t)(argb)
+#define pop_color()                     GAME_FN(0x17e40, void, void)()
+#define draw_rect(x, y, w, h)           GAME_FN(0x182d0, void, int, int, int, int)(x, y, w, h)    /* in the current colour */
 #define input_confirm_pressed()         GAME_FN(0x6d360, char, void)()
 #define input_cancel_pressed()          GAME_FN(0x6d4a0, char, void)()
 #define menu_down_repeat()              GAME_FN(0x6d740, char, void)()             /* down pressed, or held long enough to repeat */
