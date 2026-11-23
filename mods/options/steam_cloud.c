@@ -316,7 +316,7 @@ static void page_qr(void) {
     if (qr_side > 0) {
         /* black dots on a white square, centred; each row is drawn as runs of dark dots. 2 screen pixels per dot:
          * the window shows the 320 x 180 screen several times enlarged, which keeps the code easy to scan */
-        int dot = qr_side <= 40 ? 2 : 1, size = qr_side * dot, left = 160 - size / 2, top = 50;
+        int dot = qr_side <= 40 ? 2 : 1, size = qr_side * dot, left = 160 - size / 2, top = 52;
         ui_rect(left - dot, top - dot, size + 2 * dot, size + 2 * dot, UI_WHITE);
         for (int y = 0; y < qr_side; y++)
             for (int x = 0; x < qr_side; x++) {
@@ -346,9 +346,7 @@ static void page_typing(void) {
     pthread_mutex_lock(&lock);
     snprintf(words, sizeof words, "%s",
              state == NAME ? "type your steam account name, then press return." :
-             state == PASSWORD ? "type your password, then press return.\n\nit goes to steam only, encrypted with steam's "
-                                 "own key. the loader does not keep it. what it keeps, in your mac's keychain, is the "
-                                 "sign-in steam hands back." : code_hint);
+             state == PASSWORD ? "type your password, then press return.\n\nit goes to steam only," : code_hint);
     snprintf(hint, sizeof hint, "%s", state == CODE ? steam_hint : "");
     pthread_mutex_unlock(&lock);
     int y = ui_text(160, 44, 290, UI_WHITE, words);

@@ -7,9 +7,21 @@
 #include "mods.h"
 #include "game_api.h"
 #include "ui.h"
+#include "notify/notify.h"
 #include "options/list.h"
 
 uint8_t *mods_image;
+
+/* see game_api.h */
+enum { CODE_CAVE = 0x13b5c0, CODE_CAVE_END = 0x13c000 };
+uint32_t mods_add_code(const void *code, size_t size) {
+    static uint32_t next = CODE_CAVE;
+    uint32_t rva = next;
+    if (rva + size > CODE_CAVE_END) return 0;
+    memcpy(AT(rva), code, size);
+    next = (uint32_t)((rva + size + 15) & ~15u);
+    return rva;
+}
 
 /* Switch to another menu, the way the game's menus do it: menu_state keeps the menu we come from. */
 static void open_menu(int id) {
@@ -83,11 +95,10 @@ static void mod_title_credit(const char *text) {
  *    does what the 5 bytes did.
  *
  * The stubs are machine code that has to sit within reach of main_menu's 32-bit jumps, so they are copied into
- * unused memory behind the game's code: .text ends at rva 0x13b5b6, its last page at 0x13c000. They are written
+ * unused memory behind the game's code (mods_add_code). They are written
  * here as assembly; whatever address they need comes from an 8-byte slot behind stub B that is filled in below. */
 #define MENU_TEXT_ID 0x7000                 /* far above the game's 292 text ids */
 #define SUBMENU_ID   100                    /* a menu_id the game does not use */
-enum { STUB_CAVE = 0x13b5c0, STUB_CAVE_END = 0x13c000 };
 
 extern const uint8_t mod_menu_stub_a[], mod_menu_stub_a_end[], mod_menu_stub_b[], mod_menu_stub_b_slots[], mod_menu_stub_b_end[],
                      mod_menu_stub_c[], mod_menu_stub_c_slots[], mod_menu_stub_c_end[];
@@ -169,19 +180,17 @@ static void mod_menu_entry(void) {
     const uint32_t append = 0x1f1c7, append_end = 0x1f1d8, above_4 = 0x1f684, unknown_menu = 0x51fb9;
     size_t size_a = (size_t)(mod_menu_stub_a_end - mod_menu_stub_a), size_b = (size_t)(mod_menu_stub_b_end - mod_menu_stub_b),
            size_c = (size_t)(mod_menu_stub_c_end - mod_menu_stub_c);
-    uint32_t stub_a = STUB_CAVE, stub_b = (uint32_t)((stub_a + size_a + 15) & ~15u), stub_c = (uint32_t)((stub_b + size_b + 15) & ~15u);
     if (memcmp(AT(append), "\x89\xd9\x48\xba\x03\x00\x00\x00\x04\x00\x00\x00\x48\x89\x54\x8c\x50", 17) != 0 ||
-        memcmp(AT(above_4), "\x0f\x87", 2) != 0 || memcmp(AT(unknown_menu), "\x48\x83\xc4\x28\xc3", 5) != 0 ||
-        stub_c + size_c > STUB_CAVE_END) {
+        memcmp(AT(above_4), "\x0f\x87", 2) != 0 || memcmp(AT(unknown_menu), "\x48\x83\xc4\x28\xc3", 5) != 0) {
         fprintf(stderr, "mod_menu_entry: not applied\n");
         return;
     }
     /* the stubs, and the addresses stub B needs */
-    memcpy(AT(stub_a), mod_menu_stub_a, size_a);
-    memcpy(AT(stub_b), mod_menu_stub_b, size_b);
+    uint32_t stub_a = mods_add_code(mod_menu_stub_a, size_a), stub_b = mods_add_code(mod_menu_stub_b, size_b),
+             stub_c = mods_add_code(mod_menu_stub_c, size_c);
+    if (!stub_a || !stub_b || !stub_c) { fprintf(stderr, "mod_menu_entry: no room for the stubs\n"); return; }
     uint64_t slots[3] = { (uint64_t)(uintptr_t)menu_entry_chosen, (uint64_t)(uintptr_t)AT(0x1f6e4), (uint64_t)(uintptr_t)AT(0x1f7be) };
     memcpy(AT(stub_b + (uint32_t)(mod_menu_stub_b_slots - mod_menu_stub_b)), slots, sizeof slots);
-    memcpy(AT(stub_c), mod_menu_stub_c, size_c);
     uint64_t slots_c[2] = { (uint64_t)(uintptr_t)submenu_update, (uint64_t)(uintptr_t)AT(0x51fcc) };
     memcpy(AT(stub_c + (uint32_t)(mod_menu_stub_c_slots - mod_menu_stub_c)), slots_c, sizeof slots_c);
     /* A: "call stub A", the rest of the 17 bytes does nothing (0x90 = nop) */
@@ -204,4 +213,5 @@ void mods_apply(uint8_t *mapped_image) {
     mods_image = mapped_image;
     mod_title_credit("billy basso / bigmode 2024 / macOS by Community");
     mod_menu_entry();
+    notify_install();
 }

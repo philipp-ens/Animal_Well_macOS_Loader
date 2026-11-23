@@ -37,11 +37,13 @@ void ui_title(const char *text) {
     pop_layer();
 }
 
-int ui_text(int center_x, int y, int max_width, uint32_t color, const char *text) {
-    char lines[1024];
+/* Break `text` into lines of at most max_width pixels in the small font: the result has a '\n' wherever a line
+ * ends. Returns the number of lines; *widest = the width of the longest one. */
+static int wrap(const char *text, int max_width, char *lines, size_t size, int *widest) {
     size_t out = 0, line_start = 0, last_space = 0;
     int width = 0, width_at_space = 0, count = 1;
-    for (size_t i = 0; text[i] && out < sizeof lines - 1; i++) {
+    *widest = 0;
+    for (size_t i = 0; text[i] && out < size - 1; i++) {
         char c = showable(text[i]);
         if (c == '\n') { lines[out++] = c; line_start = out; last_space = 0; width = 0; count++; continue; }
         if (c == ' ') { last_space = out; width_at_space = width; }
@@ -49,18 +51,53 @@ int ui_text(int center_x, int y, int max_width, uint32_t color, const char *text
         width += char_width(0, c);
         if (width > max_width && last_space > line_start) {     /* too long: the last space becomes the line break */
             lines[last_space] = '\n';
+            if (width_at_space > *widest) *widest = width_at_space;
             line_start = last_space + 1;
             width -= width_at_space + char_width(0, ' ');
             last_space = 0;
             count++;
         }
+        if (width > *widest) *widest = width;
     }
     lines[out] = 0;
+    return count;
+}
+
+int ui_text(int center_x, int y, int max_width, uint32_t color, const char *text) {
+    char lines[1024];
+    int widest, count = wrap(text, max_width, lines, sizeof lines, &widest);
     set_font(0);
     set_color(color);
     draw_text_centered(center_x, y, text16(lines));
     set_color(UI_WHITE);
     return y + count * FONT(0)[FONT_LINE];
+}
+
+void ui_text_size(const char *text, int max_width, int *width, int *height) {
+    char lines[1024];
+    int count = wrap(text, max_width, lines, sizeof lines, width);
+    *height = count * FONT(0)[FONT_LINE];
+}
+
+/* The game only draws centred text, so each line is drawn by itself, centred around its own middle. */
+int ui_text_left(int x, int y, int max_width, uint32_t color, const char *text) {
+    char lines[1024];
+    int widest;
+    wrap(text, max_width, lines, sizeof lines, &widest);
+    set_font(0);
+    set_color(color);
+    for (char *line = lines; line; ) {
+        char *end = strchr(line, '\n');
+        if (end) *end = 0;
+        int width = 0;
+        for (const char *c = line; *c; c++) width += char_width(0, *c);
+        if (width > 0) width -= FONT(0)[FONT_GAP];             /* no gap behind the last character */
+        draw_text_centered(x + (width + 1) / 2, y, text16(line));
+        y += FONT(0)[FONT_LINE];
+        line = end ? end + 1 : NULL;
+    }
+    set_color(UI_WHITE);
+    return y;
 }
 
 int ui_options(int y, const char *const *labels, int count) {

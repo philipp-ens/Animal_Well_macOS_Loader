@@ -4,11 +4,17 @@
  * the ones from the decompilation. */
 #ifndef MODS_GAME_API_H
 #define MODS_GAME_API_H
+#include <stddef.h>
 #include <stdint.h>
 
 extern uint8_t *mods_image;                 /* where the exe is mapped (set by mods_apply) */
 #define AT(rva) (mods_image + (rva))        /* address of something inside it */
 #define MSABI __attribute__((ms_abi))       /* "call this the Windows way": how the game's own functions are called */
+
+/* Copy a piece of machine code into unused memory behind the game's code (.text ends at rva 0x13b5b6, its last
+ * page at 0x13c000) and return the copy's rva; 0 = no room left. For stubs that the game's own code jumps to:
+ * its 32-bit jumps only reach places near it. Only while mods_apply runs - afterwards the code cannot be written. */
+uint32_t mods_add_code(const void *code, size_t size);
 
 /* ---- the game's own functions, by rva ---- */
 #define GAME_FN(rva, result, ...) ((result (MSABI *)(__VA_ARGS__))AT(rva))

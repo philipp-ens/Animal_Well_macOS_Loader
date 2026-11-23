@@ -30,11 +30,12 @@ CLOUD=steamcloud
 if [ ! -f "$CLOUD/steamcloud.m" ]; then CLOUD=.; fi
 
 # The mods (changes to the game itself) are in the folder mods/ - in the repository and inside the installer
-# package alike. Every option of the "mods" submenu is one file in mods/options/: all of them are compiled.
+# package alike. Its subfolders hold one file per option of the "mods" submenu (mods/options/) and the in-game
+# notifications (mods/notify/): every .c file in mods/ and its subfolders is compiled.
 MODS=mods
 
 clang -arch x86_64 -O2 -fobjc-arc -I "$CLOUD" -I "$MODS" game.c dxbc2msl.c main.m "$CLOUD/steamcloud.m" \
-    "$MODS"/*.c "$MODS"/options/*.c \
+    "$MODS"/*.c "$MODS"/*/*.c \
     -framework Cocoa -framework Metal -framework MetalKit -framework QuartzCore \
     -framework AudioToolbox -framework GameController \
     -framework Security -framework CoreImage -lz \

@@ -16,6 +16,10 @@ void ui_title(const char *text);
  * the last line. */
 int  ui_text(int center_x, int y, int max_width, uint32_t color, const char *text);
 
+/* The same text with its lines starting at x, and the size it takes (for drawing something behind it). */
+int  ui_text_left(int x, int y, int max_width, uint32_t color, const char *text);
+void ui_text_size(const char *text, int max_width, int *width, int *height);
+
 /* One centred line in the font of the game's menu entries. Unlike the small font it has every sign of the
  * keyboard (the small font lacks ( ) * _ @ and others). Returns the y below. */
 int  ui_line(int y, uint32_t color, const char *text);

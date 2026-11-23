@@ -36,11 +36,10 @@ trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$WORK/scripts/source" "$WORK/resources"
 echo "== step 1 of 2: packing the source files"
 for f in $SOURCES; do cp "$f" "$WORK/scripts/source/"; done
-# the mods keep their folder (mods/ with one file per option in mods/options/)
+# the mods keep their folder, with its subfolders (mods/options/, mods/notify/)
 if [ ! -f mods/mods.c ]; then echo "missing: mods/mods.c"; exit 1; fi
-mkdir -p "$WORK/scripts/source/mods/options"
-cp mods/*.c mods/*.h "$WORK/scripts/source/mods/"
-cp mods/options/*.c mods/options/*.h "$WORK/scripts/source/mods/options/"
+cp -R mods "$WORK/scripts/source/mods"
+find "$WORK/scripts/source/mods" -name .DS_Store -delete
 
 # ---- the install script: runs on the user's Mac, as root, when they press "Install" ----
 # $3 is the disk being installed on ("/"). What the build prints is kept in a log file.
