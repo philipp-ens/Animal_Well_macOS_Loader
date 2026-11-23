@@ -995,6 +995,121 @@ static void cloud_show_qr(const char *address, void *context) {
     on_main_thread(^{ view.image = qr_image(text); });
 }
 
+/* Start the loader again once this process has ended, with the arguments it was started with. */
+static void restart_when_ended(void) {
+    NSArray<NSString *> *arguments = NSProcessInfo.processInfo.arguments;
+    NSArray<NSString *> *rest = [arguments subarrayWithRange:NSMakeRange(1, arguments.count - 1)];
+    NSString *bundle = NSBundle.mainBundle.bundlePath;
+    NSMutableArray<NSString *> *command = [NSMutableArray array];
+    if ([bundle.pathExtension isEqualToString:@"app"]) {            /* the app: let macOS open it, as a double-click does */
+        [command addObjectsFromArray:@[ @"/usr/bin/open", @"-n", bundle ]];
+        if (rest.count) [command addObject:@"--args"];
+    } else {
+        [command addObject:NSBundle.mainBundle.executablePath];     /* a bare program (terminal test) */
+    }
+    [command addObjectsFromArray:rest];
+    /* a shell that waits until this process ($0 = its number) is gone, then becomes the command ("$@") */
+    NSMutableArray<NSString *> *shell = [NSMutableArray arrayWithObjects:@"-c",
+        @"while kill -0 \"$0\" 2>/dev/null; do sleep 0.2; done; exec \"$@\"",
+        [NSString stringWithFormat:@"%d", getpid()], nil];
+    [shell addObjectsFromArray:command];
+    NSError *problem = nil;
+    if (![NSTask launchedTaskWithExecutableURL:[NSURL fileURLWithPath:@"/bin/sh"] arguments:shell error:&problem terminationHandler:nil])
+        printf("could not arrange the restart: %s\n", problem.localizedDescription.UTF8String);
+}
+
+/* When the game's save in the Steam Cloud was last changed; 0 = the cloud has none, -1 = could not look. */
+static int64_t cloud_save_time(char *error, size_t error_size) {
+    enum { MAX_FILES = 512 };
+    steamcloud_file *files = calloc(MAX_FILES, sizeof *files);
+    int count = steamcloud_list(STEAM_APP_ID, files, MAX_FILES, error, error_size);
+    int64_t time = count < 0 ? -1 : 0;
+    for (int i = 0; i < count && i < MAX_FILES; i++)
+        if (!strcmp(files[i].name, CLOUD_SAVE_NAME)) time = (int64_t)files[i].time;
+    free(files);
+    return time;
+}
+
+/* Right after a sign-in: compare the save here with the one in the Steam Cloud and, if they differ, let the user
+ * choose at once which one to keep. `title` and `intro` open every message shown here.
+ *
+ * Unlike cloud_sync this runs while the game does, and the game keeps its save in memory. Sending this Mac's save
+ * to the cloud is harmless then. Taking the cloud's is not: the game would write its old save over the new file the
+ * next time it saves. So the game's saving is switched off first (game_lock_save), the file is replaced, and the
+ * loader starts again - the game then reads the cloud's save like any other. */
+static void cloud_first_sync(NSString *title, NSString *intro) {
+    char error[512] = "";
+    const char *save = g_cloudSave.fileSystemRepresentation;
+    NSString *later = @"It is tried again when you quit the game.";
+    /* What an earlier sign-in (maybe of another account) remembered about the two sides says nothing now. Without
+     * it, two saves that differ are a conflict: never settled without asking. */
+    [[NSFileManager defaultManager] removeItemAtPath:[g_cloudSave stringByAppendingString:@".cloudsync"] error:nil];
+    if (!steamcloud_connect(error, sizeof error)) {
+        printf("Steam Cloud (sign-in): could not compare the saves - %s\n", error);
+        ask(title, [NSString stringWithFormat:@"%@\n\nThe Steam Cloud could not be reached just now (%s). %@", intro, error, later], @[ @"OK" ]);
+        return;
+    }
+
+    /* how the two sides differ */
+    steamcloud_conflict conflict = { 0 };
+    steamcloud_sync_result result;
+    BOOL only_cloud = NO;                                   /* the cloud has a save, this Mac has none yet */
+    if (![[NSFileManager defaultManager] fileExistsAtPath:g_cloudSave]) {
+        int64_t time = cloud_save_time(error, sizeof error);
+        result = time < 0 ? STEAMCLOUD_SYNC_FAILED : time == 0 ? STEAMCLOUD_IN_SYNC : STEAMCLOUD_CONFLICT;
+        conflict.cloud_time = time > 0 ? (uint64_t)time : 0;
+        only_cloud = time > 0;
+    } else {            /* sends this Mac's save if the cloud has none; otherwise changes nothing */
+        result = steamcloud_sync(STEAM_APP_ID, CLOUD_SAVE_NAME, save, STEAMCLOUD_WINDOWS, STEAMCLOUD_ASK, &conflict, error, sizeof error);
+    }
+
+    BOOL restart = NO;
+    NSString *outcome;
+    if (result == STEAMCLOUD_CONFLICT) {
+        NSString *text = only_cloud
+            ? [NSString stringWithFormat:@"%@\n\nThe Steam Cloud has a save (last changed %@); this Mac has none yet. Do you "
+                                          "want to use it?", intro, date_text(conflict.cloud_time)]
+            : [NSString stringWithFormat:@"%@\n\nYour save is different on this Mac and in the Steam Cloud:\n\n"
+                                          "This Mac: last changed %@\nSteam Cloud: last changed %@\n\nWhich one do you want "
+                                          "to keep? The other one is kept as a backup file in the save folder.",
+                                         intro, date_text(conflict.local_time), date_text(conflict.cloud_time)];
+        text = [text stringByAppendingString:@"\n\nTo use the Steam Cloud's save the game starts again: what you played "
+                                              "since you last saved is lost."];
+        NSModalResponse answer = ask(title, text, only_cloud ? @[ @"Use Steam Cloud's and Restart", @"Not Now" ]
+                                                             : @[ @"Use Steam Cloud's and Restart", @"Use This Mac's", @"Not Now" ]);
+        if (answer == NSAlertFirstButtonReturn) {
+            game_lock_save();                               /* the game must not write its old save over the download */
+            result = steamcloud_sync(STEAM_APP_ID, CLOUD_SAVE_NAME, save, STEAMCLOUD_WINDOWS, STEAMCLOUD_KEEP_CLOUD, NULL, error, sizeof error);
+            restart = YES;                                  /* also if it failed: only a new start makes the game save again */
+        } else if (answer == NSAlertSecondButtonReturn && !only_cloud) {
+            result = steamcloud_sync(STEAM_APP_ID, CLOUD_SAVE_NAME, save, STEAMCLOUD_WINDOWS, STEAMCLOUD_KEEP_LOCAL, NULL, error, sizeof error);
+        }
+    }
+    steamcloud_disconnect();
+    printf("Steam Cloud (sign-in): %s%s\n",
+           result == STEAMCLOUD_IN_SYNC ? "the save is the same here and in the cloud" :
+           result == STEAMCLOUD_DOWNLOADED ? "took the cloud's save (the one that was here is kept as .before-download)" :
+           result == STEAMCLOUD_UPLOADED ? "sent this Mac's save to the cloud" :
+           result == STEAMCLOUD_CONFLICT ? "the saves differ; the user chose to decide later" : "sync failed - ",
+           result == STEAMCLOUD_SYNC_FAILED ? error : "");
+
+    if (restart) {
+        if (result != STEAMCLOUD_DOWNLOADED)
+            ask(@"The Steam Cloud's save could not be fetched",
+                [NSString stringWithFormat:@"%s\n\nYour save on this Mac is as it was. The game starts again now.", error], @[ @"OK" ]);
+        g_cloudPostponed = YES;                             /* nothing changes any more in this run: no sync at its end */
+        restart_when_ended();
+        [NSApp terminate:nil];
+        return;
+    }
+    outcome = result == STEAMCLOUD_IN_SYNC ? @"Your save here and the one in the Steam Cloud are the same." :
+              result == STEAMCLOUD_UPLOADED ? @"This Mac's save was sent to the Steam Cloud." :
+              result == STEAMCLOUD_CONFLICT ? @"Nothing was changed. You are asked again when you quit the game." :
+              [NSString stringWithFormat:@"The saves could not be compared just now (%s). %@", error, later];
+    if (result == STEAMCLOUD_CONFLICT) return;              /* "Not Now": the dialog already said everything */
+    ask(title, [NSString stringWithFormat:@"%@\n\n%@", intro, outcome], @[ @"OK" ]);
+}
+
 /* What both ways of signing in end with. `error` says why if it did not work. */
 static void cloud_after_sign_in(BOOL signed_in, char *error) {
     if (!signed_in) {
@@ -1002,20 +1117,13 @@ static void cloud_after_sign_in(BOOL signed_in, char *error) {
         ask(@"The sign-in did not work", @(error), @[ @"OK" ]);
         return;
     }
-    char account[256] = "", problem[512] = "";
+    char account[256] = "";
     steamcloud_signed_in(account, sizeof account);
-    /* Syncing has to wait until the game has ended. But looking is harmless: if the save here and the one in the
-     * cloud are the same right now, note that - then the sync at the end knows that only this Mac's save changed
-     * since, and sends it without asking which of the two to keep. */
-    if (g_cloudSave && steamcloud_connect(problem, sizeof problem)) {
-        int same = steamcloud_remember_if_same(STEAM_APP_ID, CLOUD_SAVE_NAME, g_cloudSave.fileSystemRepresentation, problem, sizeof problem);
-        steamcloud_disconnect();
-        printf("Steam Cloud (sign-in): the save here and in the cloud are %s\n", same ? "the same" : "not the same");
-    }
-    ask(@"Steam Cloud sync is on",
-        [NSString stringWithFormat:@"Signed in as %s. From now on your save is brought in line with the Steam Cloud each "
-                                    "time the game starts and each time it ends - the first time when you quit this game.",
-                                   account], @[ @"OK" ]);
+    NSString *title = @"Steam Cloud sync is on";
+    NSString *intro = [NSString stringWithFormat:@"Signed in as %s. From now on your save is brought in line with the Steam "
+                                                  "Cloud each time the game starts and each time it ends.", account];
+    if (!g_cloudSave) { ask(title, intro, @[ @"OK" ]); return; }    /* a test run with a save of its own: no syncing */
+    cloud_first_sync(title, intro);
 }
 
 /* The sign-in dialog: shows the QR code until the user has approved the sign-in in the Steam mobile app. */

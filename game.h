@@ -22,6 +22,9 @@ void game_set_pad(int connected, int type, unsigned buttons, float stick_x, floa
 void game_set_window_size(int width, int height);       /* size of the back buffer in pixels, whenever it changes */
 int  game_wants_fullscreen(void);                       /* the game's own "fullscreen" option */
 int  game_wants_quit(void);
+void game_lock_save(void);                              /* from now on the game no longer writes the save file: for when
+                                                           the file was replaced under the running game (a Steam Cloud
+                                                           download), which still has the old save in memory */
 int  game_steam_start(const char *libsteam_api_path);   /* optional, before game_start: 1 = connected and
                                                            achievements available, 0 = not (try another copy) */
 void game_steam_stop(void);                             /* when the program ends */                             /* set when "quit" is chosen in the main menu */

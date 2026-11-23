@@ -625,7 +625,26 @@ static void save_file_read(void *buffer, size_t size) {
     fclose(f);
 }
 
+/* game_lock_save: from then on the game's writes to the save file are dropped. The game writes on a thread of its
+ * own, so the lock waits until a write that is under way has finished. */
+static pthread_mutex_t save_mutex = PTHREAD_MUTEX_INITIALIZER;
+static int save_locked;
+
+static void save_file_write_now(const void *data, size_t size);
 static void save_file_write(const void *data, size_t size) {
+    pthread_mutex_lock(&save_mutex);
+    if (save_locked) printf("save not written: the save file is locked\n");
+    else save_file_write_now(data, size);
+    pthread_mutex_unlock(&save_mutex);
+}
+
+void game_lock_save(void) {
+    pthread_mutex_lock(&save_mutex);
+    save_locked = 1;
+    pthread_mutex_unlock(&save_mutex);
+}
+
+static void save_file_write_now(const void *data, size_t size) {
     char other[1100];
     if (!save_path[0]) return;
     snprintf(other, sizeof other, "%s.bak", save_path);        /* keep the file as it was before this program */
