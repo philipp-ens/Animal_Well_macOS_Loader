@@ -17,7 +17,7 @@ trap 'echo "build_pkg.sh STOPPED at line $LINENO - the step just before this mes
 cd "$(dirname "$0")/.."         # the repository's main folder: the source files are there, the scripts in scripts/
 
 # (the package holds them all in one folder, without "scripts/")
-SOURCES="game.c game.h main.m dxbc2msl.c dxbc2msl.h steamcloud/steamcloud.m steamcloud/steamcloud.h mods/mods.c mods/mods.h icon/icon.icns
+SOURCES="game.c game.h main.m dxbc2msl.c dxbc2msl.h steamcloud/steamcloud.m steamcloud/steamcloud.h icon/icon.icns
          scripts/get_game_files.sh scripts/build_app.sh"
 for f in $SOURCES; do
     if [ ! -f "$f" ]; then echo "missing: $f"; exit 1; fi
@@ -36,6 +36,11 @@ trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$WORK/scripts/source" "$WORK/resources"
 echo "== step 1 of 2: packing the source files"
 for f in $SOURCES; do cp "$f" "$WORK/scripts/source/"; done
+# the mods keep their folder (mods/ with one file per option in mods/options/)
+if [ ! -f mods/mods.c ]; then echo "missing: mods/mods.c"; exit 1; fi
+mkdir -p "$WORK/scripts/source/mods/options"
+cp mods/*.c mods/*.h "$WORK/scripts/source/mods/"
+cp mods/options/*.c mods/options/*.h "$WORK/scripts/source/mods/options/"
 
 # ---- the install script: runs on the user's Mac, as root, when they press "Install" ----
 # $3 is the disk being installed on ("/"). What the build prints is kept in a log file.
@@ -87,7 +92,7 @@ fi
 
 # ---- 2. build ----
 BUILD=$(mktemp -d /tmp/animal-well-loader.XXXXXX) || exit 1
-cp "$HERE/source/"* "$BUILD/" || exit 1
+cp -R "$HERE/source/"* "$BUILD/" || exit 1
 cd "$BUILD" || exit 1
 
 echo "Animal Well Loader: building the app in $BUILD"

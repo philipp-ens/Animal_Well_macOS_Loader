@@ -1,26 +1,14 @@
 /* mods.c - changes to the game itself (experiments); see mods.h.
- * Every address here is an rva in the one supported build of Animal Well.exe (game.c checks the file). */
+ * Here: the patches that put the entry "mods" into the main menu, and the submenu it opens. What the submenu
+ * offers is not here: every option is a file of its own in options/ (options/list.h lists them).
+ * Every address is an rva in the one supported build of Animal Well.exe (game.c checks the file). */
 #include <stdio.h>
 #include <string.h>
 #include "mods.h"
+#include "game_api.h"
+#include "options/list.h"
 
-static uint8_t *image;
-#define AT(rva) (image + (rva))
-#define MSABI __attribute__((ms_abi))       /* "call this the Windows way": how the game's own functions are called */
-
-/* the game's own functions that mods call, by rva */
-#define GAME_FN(rva, result, ...) ((result (MSABI *)(__VA_ARGS__))AT(rva))
-#define set_color(argb)                 GAME_FN(0x17dc0, void, uint32_t)(argb)
-#define push_layer(layer)               GAME_FN(0x17e50, void, int)(layer)
-#define pop_layer()                     GAME_FN(0x17eb0, void, void)()
-#define set_font(font)                  GAME_FN(0x6e2e0, void, int)(font)          /* 0 small, 1 large (menu titles) */
-#define draw_text_centered(x, y, text)  GAME_FN(0x6ecd0, void, int, int, const uint16_t *)(x, y, text)
-#define input_cancel_pressed()          GAME_FN(0x6d4a0, char, void)()
-
-/* the game's state: g_game points to it. Menu fields (see main_menu / options_menu in the decompilation): */
-#define GAME                (*(uint8_t **)AT(0x2d285f8))
-#define GAME_INT(offset)    (*(int32_t *)(GAME + (offset)))
-enum { MENU_ROW = 0x93610, MENU_SCROLL = 0x93618, MENU_STATE = 0x93640, MENU_ID = 0x93644, MENU_FRAMES = 0x93648 };
+uint8_t *mods_image;
 
 /* Switch to another menu, the way the game's menus do it: menu_state keeps the menu we come from. */
 static void open_menu(int id) {
@@ -149,18 +137,48 @@ static const uint16_t *MSABI mod_get_text(int id) {
 /* C: what the new entry does */
 static void MSABI menu_entry_chosen(void) { open_menu(SUBMENU_ID); }
 
-/* D: the submenu, once per frame while it is open. 1 = menu_id was ours. So far it is empty: its title, placed
- * like "OPTIONS" in the options menu, and the way back to the main menu (the cancel button). */
+/* plain letters -> the game's 16-bit characters */
+static const uint16_t *text16(const char *text) {
+    static uint16_t wide[64];
+    size_t i;
+    for (i = 0; text[i] && i < 63; i++) wide[i] = (uint8_t)text[i];
+    wide[i] = 0;
+    return wide;
+}
+
+/* D: the submenu, once per frame while it is open. 1 = menu_id was ours.
+ * Its title is placed like "OPTIONS" in the options menu; below it the options of options/list.h, drawn like the
+ * main menu's entries: centred, a line apart, the chosen one between the two animated arrows (sprite 0x86,
+ * 8 frames, a new one every 4 game frames). menu_row is the chosen option. */
 static char MSABI submenu_update(void) {
-    static const uint16_t title[] = { 'm', 'o', 'd', 's', 0 };
+    enum { COUNT = sizeof mod_options / sizeof *mod_options, FIRST_Y = 60 };
     if (GAME_INT(MENU_ID) != SUBMENU_ID) return 0;
     set_color(0xffffffff);
     push_layer(0xe);
     set_font(1);
-    draw_text_centered(160, 16, title);
+    draw_text_centered(160, 16, text16("mods"));
     set_font(0);
     pop_layer();
-    if (input_cancel_pressed()) open_menu(1);
+
+    int row = GAME_INT(MENU_ROW);
+    if (menu_down_repeat() && row < COUNT - 1) row++;
+    if (menu_up_repeat() && row > 0) row--;
+    if (row < 0 || row >= COUNT) row = 0;
+    GAME_INT(MENU_ROW) = row;
+
+    int line = *(int16_t *)(current_lang_font() + 0x2000e), arrow = (int)(GAME_INT64(TOTAL_FRAMES) / 4 % 8);
+    for (int i = 0; i < COUNT; i++) {
+        const uint16_t *label = text16(mod_options[i]->label);
+        int width = text_width(label), x = 160 - width / 2, y = FIRST_Y + i * line;
+        if (i == row) {
+            draw_atlas_scaled(x - 10, y + 2, 8, 8, 0x86, arrow);
+            draw_atlas_scaled(x + width + 10, y + 2, -8, 8, 0x86, arrow);
+        }
+        draw_text(x, y, label);
+    }
+
+    if (input_confirm_pressed() && mod_options[row]->chosen) mod_options[row]->chosen();
+    else if (input_cancel_pressed()) open_menu(1);
     return 1;
 }
 
@@ -200,7 +218,7 @@ static void mod_menu_entry(void) {
 }
 
 void mods_apply(uint8_t *mapped_image) {
-    image = mapped_image;
+    mods_image = mapped_image;
     mod_title_credit("billy basso / bigmode 2024 / macOS by Community");
     mod_menu_entry();
 }
