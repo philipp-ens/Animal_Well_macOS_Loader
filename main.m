@@ -361,32 +361,88 @@ void host_draw_fullscreen(unsigned texture_slots_read) {
 /* ------------------------------------------------------------------ keyboard: Mac key codes -> Windows codes */
 static int windows_key(unsigned short mac_key_code) {
     switch (mac_key_code) {
+    /* letters, by position on an American keyboard (fallback only) */
+    case 0x00: return 'A';  case 0x0B: return 'B';  case 0x08: return 'C';  case 0x02: return 'D';
+    case 0x0E: return 'E';  case 0x03: return 'F';  case 0x05: return 'G';  case 0x04: return 'H';
+    case 0x22: return 'I';  case 0x26: return 'J';  case 0x28: return 'K';  case 0x25: return 'L';
+    case 0x2E: return 'M';  case 0x2D: return 'N';  case 0x1F: return 'O';  case 0x23: return 'P';
+    case 0x0C: return 'Q';  case 0x0F: return 'R';  case 0x01: return 'S';  case 0x11: return 'T';
+    case 0x20: return 'U';  case 0x09: return 'V';  case 0x0D: return 'W';  case 0x07: return 'X';
+    case 0x10: return 'Y';  case 0x06: return 'Z';
+    /* the digit row (by position: on some layouts these keys type digits only with Shift) */
+    case 0x12: return '1';  case 0x13: return '2';  case 0x14: return '3';  case 0x15: return '4';
+    case 0x17: return '5';  case 0x16: return '6';  case 0x1A: return '7';  case 0x1C: return '8';
+    case 0x19: return '9';  case 0x1D: return '0';
+    /* the number pad: Windows 0x60 (0) ... 0x69 (9) */
+    case 0x52: return 0x60; case 0x53: return 0x61; case 0x54: return 0x62; case 0x55: return 0x63;
+    case 0x56: return 0x64; case 0x57: return 0x65; case 0x58: return 0x66; case 0x59: return 0x67;
+    case 0x5B: return 0x68; case 0x5C: return 0x69;
+    case 0x43: return 0x6A;     /* pad *      */
+    case 0x45: return 0x6B;     /* pad +      */
+    case 0x4E: return 0x6D;     /* pad -      */
+    case 0x41: return 0x6E;     /* pad .      */
+    case 0x4B: return 0x6F;     /* pad /      */
+    case 0x4C: return 0x0D;     /* pad enter  */
+    /* arrows and the keys around them */
     case 0x7B: return 0x25;     /* left arrow */
     case 0x7C: return 0x27;     /* right arrow */
     case 0x7D: return 0x28;     /* down arrow */
     case 0x7E: return 0x26;     /* up arrow */
+    case 0x73: return 0x24;     /* home */
+    case 0x77: return 0x23;     /* end */
+    case 0x74: return 0x21;     /* page up */
+    case 0x79: return 0x22;     /* page down */
+    case 0x75: return 0x2E;     /* forward delete */
+    /* the big keys */
     case 0x31: return 0x20;     /* space */
     case 0x24: return 0x0D;     /* return */
     case 0x35: return 0x1B;     /* escape */
     case 0x30: return 0x09;     /* tab */
-    case 0x00: return 'A';  case 0x01: return 'S';  case 0x02: return 'D';  case 0x0D: return 'W';
-    case 0x0C: return 'Q';  case 0x0E: return 'E';  case 0x06: return 'Z';  case 0x07: return 'X';
-    case 0x08: return 'C';  case 0x03: return 'F';  case 0x23: return 'P';  case 0x2E: return 'M';
+    case 0x33: return 0x08;     /* delete (backspace) */
+    /* punctuation, by position on an American keyboard */
+    case 0x29: return 0xBA;     /* ;  */
+    case 0x18: return 0xBB;     /* =  */
+    case 0x2B: return 0xBC;     /* ,  */
+    case 0x1B: return 0xBD;     /* -  */
+    case 0x2F: return 0xBE;     /* .  */
+    case 0x2C: return 0xBF;     /* /  */
+    case 0x32: return 0xC0;     /* `  */
+    case 0x21: return 0xDB;     /* [  */
+    case 0x2A: return 0xDC;     /* \  */
+    case 0x1E: return 0xDD;     /* ]  */
+    case 0x27: return 0xDE;     /* '  */
+    /* F1 ... F12: Windows 0x70 ... 0x7B */
+    case 0x7A: return 0x70; case 0x78: return 0x71; case 0x63: return 0x72; case 0x76: return 0x73;
+    case 0x60: return 0x74; case 0x61: return 0x75; case 0x62: return 0x76; case 0x64: return 0x77;
+    case 0x65: return 0x78; case 0x6D: return 0x79; case 0x67: return 0x7A; case 0x6F: return 0x7B;
     default:   return -1;
     }
 }
 
-/* Which keys we have told the game are held (by Mac key code). macOS does not always deliver the "key up": it
- * gets lost when the window changes during the press - above all during the fullscreen animation, which the
- * game's own fullscreen option starts while the confirm key is still down. The game would then see that key as
- * held forever. So whenever the window changes state, every held key is released. */
-static BOOL g_keyIsDown[128];
+/* The Windows number for a key press: a letter key by the letter it types, everything else by its position. */
+static int windows_key_for_event(NSEvent *event) {
+    NSString *typed = event.charactersIgnoringModifiers;
+    if (typed.length == 1) {
+        unichar c = [typed characterAtIndex:0];
+        if (c >= 'a' && c <= 'z') return c - 'a' + 'A';
+        if (c >= 'A' && c <= 'Z') return c;
+    }
+    return windows_key(event.keyCode);
+}
+
+/* Which keys we have told the game are held: for each Mac key code, the Windows number that was reported
+ * (0 = not held). The key-up must report the same number as the key-down did.
+ * macOS does not always deliver the "key up": it gets lost when the window changes during the press - above all
+ * during the fullscreen animation, which the game's own fullscreen option starts while the confirm key is still
+ * down. The game would then see that key as held forever. So whenever the window changes state, every held key
+ * is released. */
+static int g_keyHeld[128];
 
 static void release_all_keys(void) {
     for (int code = 0; code < 128; code++) {
-        if (!g_keyIsDown[code]) continue;
-        g_keyIsDown[code] = NO;
-        game_set_key(windows_key((unsigned short)code), 0);
+        if (!g_keyHeld[code]) continue;
+        game_set_key(g_keyHeld[code], 0);
+        g_keyHeld[code] = 0;
     }
 }
 
@@ -395,13 +451,17 @@ static void release_all_keys(void) {
 @implementation GameView
 - (BOOL)acceptsFirstResponder { return YES; }
 - (void)keyDown:(NSEvent *)event {
-    if (event.isARepeat) return;
-    if (event.keyCode < 128) g_keyIsDown[event.keyCode] = YES;
-    game_set_key(windows_key(event.keyCode), 1);
+    if (event.isARepeat || event.keyCode >= 128) return;
+    int key = windows_key_for_event(event);
+    if (key <= 0) return;                                   /* a key the game has no number for */
+    if (g_keyHeld[event.keyCode]) game_set_key(g_keyHeld[event.keyCode], 0);
+    g_keyHeld[event.keyCode] = key;
+    game_set_key(key, 1);
 }
 - (void)keyUp:(NSEvent *)event {
-    if (event.keyCode < 128) g_keyIsDown[event.keyCode] = NO;
-    game_set_key(windows_key(event.keyCode), 0);
+    if (event.keyCode >= 128 || !g_keyHeld[event.keyCode]) return;
+    game_set_key(g_keyHeld[event.keyCode], 0);
+    g_keyHeld[event.keyCode] = 0;
 }
 @end
 
