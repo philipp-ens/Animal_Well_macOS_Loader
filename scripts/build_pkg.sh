@@ -17,7 +17,7 @@ trap 'echo "build_pkg.sh STOPPED at line $LINENO - the step just before this mes
 cd "$(dirname "$0")/.."         # the repository's main folder: the source files are there, the scripts in scripts/
 
 # (the package holds them all in one folder, without "scripts/")
-SOURCES="game.c game.h main.m dxbc2msl.c dxbc2msl.h steamcloud/steamcloud.m steamcloud/steamcloud.h icon/icon.icns
+SOURCES="game.c game.h main.m dxbc2msl.c dxbc2msl.h steamcloud/steamcloud.m steamcloud/steamcloud.h mods/mods.c mods/mods.h icon/icon.icns
          scripts/get_game_files.sh scripts/build_app.sh"
 for f in $SOURCES; do
     if [ ! -f "$f" ]; then echo "missing: $f"; exit 1; fi
