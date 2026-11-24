@@ -10,8 +10,13 @@
  *   use item        X, E, pad 5                                          X
  *   interact        Z, Q, backspace, return  (also "cancel" in menus)    Z
  *   switch items    1 (previous), 3 (next)                               1, 3
+ *   map             M, V                                                 M
+ *   inventory       I, R, C, 2                                           I
+ * Pause (escape, P) is not on the list on purpose: escape always stays escape - it cannot be put on an action
+ * either, because while a key is being chosen it means "keep it as it is".
  *
- * The game's own keys go on working next to yours - except a key you gave to another action.
+ * The game's own keys go on working next to yours - except a key you gave to another action. Giving an action
+ * a key that another action is on swaps the two, so no action is ever left without a key.
  * The choices are kept in the loader's settings. */
 #include <stdio.h>
 #include <string.h>
@@ -37,6 +42,8 @@ static action actions[] = {
     { "interact",      'Z',  "KeyInteract",     0 },
     { "previous item", '1',  "KeyPreviousItem", 0 },
     { "next item",     '3',  "KeyNextItem",     0 },
+    { "map",           'M',  "KeyMap",          0 },
+    { "inventory",     'I',  "KeyInventory",    0 },
 };
 enum { ACTIONS = sizeof actions / sizeof *actions, ESCAPE = 0x1b };
 
@@ -50,6 +57,28 @@ static void rebuild(void) {
         if (actions[i].chosen_key) translation[actions[i].chosen_key] = actions[i].game_key;
 }
 
+/* The key an action is on right now: the chosen one, else its own - 0 if that one was given to another action
+ * (which choose() never lets happen). */
+static int current_key(const action *a) {
+    return a->chosen_key ? a->chosen_key : translation[a->game_key] ? 0 : a->game_key;
+}
+
+static void set_key(action *a, int key) {
+    a->chosen_key = key == a->game_key ? 0 : key;          /* its own key: nothing to translate */
+    mods_host_set_int(a->setting, a->chosen_key);
+}
+
+/* Put `key` on action `which`. If the key is another action's current key, the two actions swap keys: every
+ * action always has a key. (Otherwise giving away the key of "jump" - which is also "confirm" in the menus -
+ * would leave no way to confirm anything, this page included.) */
+static void choose(int which, int key) {
+    int old_key = current_key(&actions[which]);
+    for (int i = 0; i < ACTIONS; i++)
+        if (i != which && current_key(&actions[i]) == key) set_key(&actions[i], old_key);
+    set_key(&actions[which], key);
+    rebuild();
+}
+
 static void load(void) {
     if (loaded) return;
     loaded = 1;
@@ -58,14 +87,19 @@ static void load(void) {
         actions[i].chosen_key = key > 0 && key < 256 ? key : 0;
     }
     rebuild();
-}
-
-static void choose(int which, int key) {
-    for (int i = 0; i < ACTIONS; i++)                       /* a key can stand for one action only */
-        if (actions[i].chosen_key == key) { actions[i].chosen_key = 0; mods_host_set_int(actions[i].setting, 0); }
-    actions[which].chosen_key = key == actions[which].game_key ? 0 : key;      /* its own key: nothing to translate */
-    mods_host_set_int(actions[which].setting, actions[which].chosen_key);
-    rebuild();
+    /* Choices saved by the first version of this mod could leave an action without a key. Such an action gets
+     * the own key of the action that took its key (the swap that was missing); if that does not work out,
+     * everything goes back to the game's own keys. */
+    for (int i = 0; i < ACTIONS; i++) {
+        if (current_key(&actions[i])) continue;
+        int freed = 0;
+        for (int j = 0; j < ACTIONS; j++)
+            if (actions[j].chosen_key == actions[i].game_key && !translation[actions[j].game_key]) freed = actions[j].game_key;
+        if (freed) { set_key(&actions[i], freed); rebuild(); continue; }
+        for (int j = 0; j < ACTIONS; j++) set_key(&actions[j], actions[j].game_key);
+        rebuild();
+        break;
+    }
 }
 
 /* main.m, for every key press: the key the game should get (a Windows key number), or 0 for none. */
@@ -97,10 +131,9 @@ static const char *key_name(int key) {
     return name;
 }
 
-/* The key an action is on right now: the chosen one, else its own - unless that one was given to another action. */
 static const char *action_key_name(const action *a) {
-    if (a->chosen_key) return key_name(a->chosen_key);
-    return translation[a->game_key] ? "none" : key_name(a->game_key);
+    int key = current_key(a);
+    return key ? key_name(key) : "none";
 }
 
 static void chosen(void) { load(); waiting_for = -1; }
@@ -123,7 +156,7 @@ static void page(void) {
     }
     rows[ACTIONS] = "reset all";
     rows[ACTIONS + 1] = "back";
-    int choice = ui_options(40, rows, ACTIONS + 2);
+    int choice = ui_options(36, rows, ACTIONS + 2);            /* 13 rows of 11 pixels: right below the title */
     if (choice >= 0 && choice < ACTIONS) {
         waiting_for = choice;
     } else if (choice == ACTIONS) {
