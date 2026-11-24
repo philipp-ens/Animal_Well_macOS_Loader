@@ -280,34 +280,34 @@ static void chosen(void) { show(HOME); }
 
 /* The first option of HOME is the switch: only while the sync is switched on are signing in and out offered. */
 static void page_home(void) {
-    static const char *const off_options[] = { "steam cloud sync: off", "back" };
-    static const char *const signed_out_options[] = { "steam cloud sync: on", "sign in with qr code", "sign in with password", "back" };
-    static const char *const signed_in_options[] = { "steam cloud sync: on", "sign out", "back" }, *const back[] = { "back" };
+    static const char *const off_options[] = { "steam cloud sync: off" };
+    static const char *const signed_out_options[] = { "steam cloud sync: on", "sign in with qr code", "sign in with password" };
+    static const char *const signed_in_options[] = { "steam cloud sync: on", "sign out" };
     char words[700];
     int choice, y;
     if (!mods_host_cloud_save()) {                          /* a test run with a save of its own */
         y = ui_text(160, 44, 280, UI_WHITE, "this run uses a save file of its own and does not sync.");
-        if (ui_options(y + 8, back, 1) == 0 || input_cancel_pressed()) mods_close_page();
+        if (input_cancel_pressed()) mods_close_page();
     } else if (!enabled) {
-        choice = ui_options(56, off_options, 2);
+        choice = ui_options(56, off_options, 1);
         if (choice == 0) set_enabled(1);
-        else if (choice == 1 || input_cancel_pressed()) mods_close_page();
+        else if (input_cancel_pressed()) mods_close_page();
     } else if (signed_in) {
         snprintf(words, sizeof words, "signed in as %s.", account);
         y = ui_text(160, 44, 280, UI_WHITE, words);
-        choice = ui_options(y + 8, signed_in_options, 3);
+        choice = ui_options(y + 8, signed_in_options, 2);
         if (choice == 0) {
             set_enabled(0);
         } else if (choice == 1) {
             steamcloud_sign_out();
             mods_host_cloud_set_on(NULL);                   /* the user's own doing: nothing to tell them later */
             say(MESSAGE, "signed out.");
-        } else if (choice == 2 || input_cancel_pressed()) {
+        } else if (input_cancel_pressed()) {
             mods_close_page();
         }
     } else {
         y = ui_text(160, 40, 290, UI_WHITE, "");
-        choice = ui_options(y + 8, signed_out_options, 4);
+        choice = ui_options(y + 8, signed_out_options, 3);
         if (choice == 0) {
             set_enabled(0);
         } else if (choice == 1) {
@@ -317,7 +317,7 @@ static void page_home(void) {
             start_job(job_sign_in_qr, 0);
         } else if (choice == 2) {
             show(NAME);
-        } else if (choice == 3 || input_cancel_pressed()) {
+        } else if (input_cancel_pressed()) {
             mods_close_page();
         }
     }

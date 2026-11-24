@@ -139,8 +139,8 @@ static const char *action_key_name(const action *a) {
 static void chosen(void) { load(); waiting_for = -1; }
 
 static void page(void) {
-    static char labels[ACTIONS + 2][48];
-    const char *rows[ACTIONS + 2];
+    static char labels[ACTIONS][48];
+    const char *rows[ACTIONS + 1];
     ui_title("keyboard");
     if (waiting_for >= 0) {                                 /* the key press itself arrives in mods_translate_key */
         char words[120];
@@ -155,14 +155,13 @@ static void page(void) {
         rows[i] = labels[i];
     }
     rows[ACTIONS] = "reset all";
-    rows[ACTIONS + 1] = "back";
-    int choice = ui_options(36, rows, ACTIONS + 2);            /* 13 rows of 11 pixels: right below the title */
+    int choice = ui_options(36, rows, ACTIONS + 1);            /* 12 rows of 11 pixels: right below the title */
     if (choice >= 0 && choice < ACTIONS) {
         waiting_for = choice;
     } else if (choice == ACTIONS) {
         for (int i = 0; i < ACTIONS; i++) { actions[i].chosen_key = 0; mods_host_set_int(actions[i].setting, 0); }
         rebuild();
-    } else if (choice == ACTIONS + 1 || input_cancel_pressed()) {
+    } else if (input_cancel_pressed()) {                    /* the way back is the cancel button, as in the game's menus */
         mods_close_page();
     }
 }
