@@ -12,6 +12,12 @@
  * of its own). */
 const char *mods_host_cloud_save(void);
 
+/* The switch "steam cloud sync: on / off" of the steam cloud page, kept in the loader's settings. While it is off
+ * the loader does not sync, at the start or at the end, and says nothing about a lost sign-in. A sign-in that is
+ * saved stays saved. (Never set: on if someone is signed in, else off.) */
+int  mods_host_cloud_enabled(void);
+void mods_host_cloud_set_enabled(int enabled);
+
 /* Remember that the sync is on, for this account (NULL = off, the user signed out). The loader uses it to tell
  * the user when a sign-in was lost without them signing out. */
 void mods_host_cloud_set_on(const char *account);

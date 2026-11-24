@@ -947,6 +947,15 @@ static NSString *date_text(uint64_t seconds_since_1970) {
  * settings meanwhile. If the sync is on but the sign-in is gone or no longer good, the user did not do that - and
  * has to be told, or the save would silently stop reaching the Steam Cloud. */
 static NSString *const kCloudOnKey = @"SteamCloudAccount";
+/* The user's switch in the game (main menu > mods > steam cloud): off = no syncing at all. Before the switch was
+ * ever used it counts as on for someone who is signed in, so that an update does not turn their sync off. */
+static NSString *const kCloudEnabledKey = @"SteamCloudEnabled";
+static BOOL cloud_enabled(void) {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    if ([defaults objectForKey:kCloudEnabledKey]) return [defaults boolForKey:kCloudEnabledKey];
+    return [defaults stringForKey:@"SteamCloudAccount"] != nil || steamcloud_signed_in(NULL, 0);
+}
+
 static void cloud_set_on(const char *account) {             /* NULL = off */
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
     if (account) [defaults setObject:@(account) forKey:kCloudOnKey];
@@ -966,7 +975,7 @@ static void cloud_tell_signed_out(const char *why) {
 /* `when` is "start" or "end" (for the log). Whatever goes wrong, the game must still start and end normally. */
 static void cloud_sync(const char *when) {
     char error[512] = "", account[256] = "";
-    if (!g_cloudSave) return;
+    if (!g_cloudSave || !cloud_enabled()) return;
     if (!steamcloud_signed_in(account, sizeof account)) {
         /* Each build of the loader keeps its sign-in in a Keychain entry of its own (see steamcloud.m): after an
          * update the sync is still "on" in the settings, or the old build's entry is still there, but this build
@@ -1041,6 +1050,9 @@ static void restart_when_ended(void) {
 const char *mods_host_cloud_save(void) { return g_cloudSave ? g_cloudSave.fileSystemRepresentation : NULL; }
 
 void mods_host_cloud_set_on(const char *account) { cloud_set_on(account); }
+
+int  mods_host_cloud_enabled(void) { return cloud_enabled(); }
+void mods_host_cloud_set_enabled(int enabled) { [[NSUserDefaults standardUserDefaults] setBool:enabled != 0 forKey:kCloudEnabledKey]; }
 
 /* macOS makes the QR code as a picture with one pixel per dot; the pixels are read back from a bitmap of it. */
 int mods_host_qr(const char *text, uint8_t *modules, int max_side) {

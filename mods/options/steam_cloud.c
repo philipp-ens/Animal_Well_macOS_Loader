@@ -244,13 +244,19 @@ static void *job_keep(void *which) {
 
 /* ------------------------------------------------------------------ the page (on the game's thread) */
 
+static int enabled = -1;                /* the switch "steam cloud sync: on / off" (kept by the loader); -1 = not looked yet */
+static void set_enabled(int on) { enabled = on; mods_host_cloud_set_enabled(on); }
+
 static int sync_on = -1;                /* for the line on the main menu: is a sign-in saved? -1 = not looked yet */
 
 static void show(int screen) {
     state = screen;
     GAME_INT(MENU_ROW) = 0;
     ui_field_end();
-    if (screen == HOME) signed_in = sync_on = steamcloud_signed_in(account, sizeof account);
+    if (screen == HOME) {
+        signed_in = sync_on = steamcloud_signed_in(account, sizeof account);
+        enabled = mods_host_cloud_enabled();
+    }
     if (screen == NAME) ui_field_begin(&field, 0);
     if (screen == PASSWORD || screen == CODE) ui_field_begin(&field, screen == PASSWORD);
 }
@@ -272,36 +278,46 @@ static void date_text(uint64_t seconds_since_1970, char *out, size_t size) {
 
 static void chosen(void) { show(HOME); }
 
+/* The first option of HOME is the switch: only while the sync is switched on are signing in and out offered. */
 static void page_home(void) {
-    static const char *const signed_out_options[] = { "sign in with qr code", "sign in with password", "back" };
-    static const char *const signed_in_options[] = { "sign out", "back" }, *const back[] = { "back" };
+    static const char *const off_options[] = { "steam cloud sync: off", "back" };
+    static const char *const signed_out_options[] = { "steam cloud sync: on", "sign in with qr code", "sign in with password", "back" };
+    static const char *const signed_in_options[] = { "steam cloud sync: on", "sign out", "back" }, *const back[] = { "back" };
     char words[700];
     int choice, y;
     if (!mods_host_cloud_save()) {                          /* a test run with a save of its own */
         y = ui_text(160, 44, 280, UI_WHITE, "this run uses a save file of its own and does not sync.");
         if (ui_options(y + 8, back, 1) == 0 || input_cancel_pressed()) mods_close_page();
+    } else if (!enabled) {
+        choice = ui_options(56, off_options, 2);
+        if (choice == 0) set_enabled(1);
+        else if (choice == 1 || input_cancel_pressed()) mods_close_page();
     } else if (signed_in) {
         snprintf(words, sizeof words, "signed in as %s.", account);
         y = ui_text(160, 44, 280, UI_WHITE, words);
-        choice = ui_options(y + 8, signed_in_options, 2);
+        choice = ui_options(y + 8, signed_in_options, 3);
         if (choice == 0) {
+            set_enabled(0);
+        } else if (choice == 1) {
             steamcloud_sign_out();
             mods_host_cloud_set_on(NULL);                   /* the user's own doing: nothing to tell them later */
             say(MESSAGE, "signed out.");
-        } else if (choice == 1 || input_cancel_pressed()) {
+        } else if (choice == 2 || input_cancel_pressed()) {
             mods_close_page();
         }
     } else {
         y = ui_text(160, 40, 290, UI_WHITE, "");
-        choice = ui_options(y + 8, signed_out_options, 3);
+        choice = ui_options(y + 8, signed_out_options, 4);
         if (choice == 0) {
+            set_enabled(0);
+        } else if (choice == 1) {
             cancelled = 0;
             qr_side = 0;
             show(QR);
             start_job(job_sign_in_qr, 0);
-        } else if (choice == 1) {
+        } else if (choice == 2) {
             show(NAME);
-        } else if (choice == 2 || input_cancel_pressed()) {
+        } else if (choice == 3 || input_cancel_pressed()) {
             mods_close_page();
         }
     }
@@ -461,11 +477,13 @@ static void page(void) {
     }
 }
 
-/* Every frame: on the main menu, a small line at the bottom left that says whether the sync is on - green if a
- * sign-in is saved, red if not. Looking for the sign-in asks the Keychain, so that is done once and then again
+/* Every frame: on the main menu, a small line that says whether the sync is on - green if a sign-in is saved,
+ * red if not. It is only there while the switch on the page above is on. Looking for the sign-in asks the Keychain, so that is done once and then again
  * whenever the page above shows its first screen (which is where signing in and out end). */
 static void frame(void) {
     if (GAME_INT(GAME_MODE) != 2 || GAME_INT(MENU_ID) != 1) return;
+    if (enabled < 0) enabled = mods_host_cloud_enabled();
+    if (!enabled) return;                       /* switched off: no line at all */
     if (sync_on < 0) sync_on = mods_host_cloud_save() && steamcloud_signed_in(NULL, 0);
     push_layer(0x29);                           /* the layer of the menus' texts */
     ui_text_left(4, 5, 5, sync_on ? NOTIFY_GREEN : NOTIFY_RED, sync_on ? "cloud on" : "cloud off");
