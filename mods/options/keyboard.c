@@ -17,7 +17,9 @@
  *
  * The game's own keys go on working next to yours - except a key you gave to another action. Giving an action
  * a key that another action is on swaps the two, so no action is ever left without a key.
- * The choices are kept in the loader's settings. */
+ * The choices are kept in the loader's settings.
+ *
+ * The game's key hints ("press X to ...") follow the choices: see frame() and ../keycaps.h. */
 #include <stdio.h>
 #include <string.h>
 #include "../option.h"
@@ -25,33 +27,37 @@
 #include "../host.h"
 #include "../mods.h"
 #include "../game_api.h"
+#include "../keycaps.h"
 
 typedef struct {
     const char *name;           /* as shown on the page */
     int game_key;               /* the key the game gets for it */
     const char *setting;        /* its name in the loader's settings */
     int chosen_key;             /* the user's key (a Windows key number); 0 = none chosen */
+    int hint;                   /* the character of the game's key hint for this action (keycaps.h); 0 = it has none */
 } action;
 static action actions[] = {
-    { "move up",       'W',  "KeyMoveUp",       0 },
-    { "move down",     'S',  "KeyMoveDown",     0 },
-    { "move left",     'A',  "KeyMoveLeft",     0 },
-    { "move right",    'D',  "KeyMoveRight",    0 },
-    { "jump",          0x20, "KeyJump",         0 },
-    { "use item",      'X',  "KeyUseItem",      0 },
-    { "interact",      'Z',  "KeyInteract",     0 },
-    { "previous item", '1',  "KeyPreviousItem", 0 },
-    { "next item",     '3',  "KeyNextItem",     0 },
-    { "map",           'M',  "KeyMap",          0 },
-    { "inventory",     'I',  "KeyInventory",    0 },
+    { "move up",       'W',  "KeyMoveUp",       0, 0 },
+    { "move down",     'S',  "KeyMoveDown",     0, 0 },
+    { "move left",     'A',  "KeyMoveLeft",     0, 0 },
+    { "move right",    'D',  "KeyMoveRight",    0, 0 },
+    { "jump",          0x20, "KeyJump",         0, KEYCAP_JUMP },
+    { "use item",      'X',  "KeyUseItem",      0, KEYCAP_USE_ITEM },
+    { "interact",      'Z',  "KeyInteract",     0, KEYCAP_INTERACT },
+    { "previous item", '1',  "KeyPreviousItem", 0, KEYCAP_PREVIOUS_ITEM },
+    { "next item",     '3',  "KeyNextItem",     0, KEYCAP_NEXT_ITEM },
+    { "map",           'M',  "KeyMap",          0, KEYCAP_MAP },
+    { "inventory",     'I',  "KeyInventory",    0, KEYCAP_INVENTORY },
 };
 enum { ACTIONS = sizeof actions / sizeof *actions, ESCAPE = 0x1b };
 
 static int translation[256];    /* for each key: the key the game gets in its place; 0 = the key itself */
 static int loaded;
+static int hints_stale = 1;     /* the game's key hints do not show the current keys yet (see frame) */
 static int waiting_for = -1;    /* the action whose key is being chosen: the next key press is it; -1 = none */
 
 static void rebuild(void) {
+    hints_stale = 1;
     memset(translation, 0, sizeof translation);
     for (int i = 0; i < ACTIONS; i++)
         if (actions[i].chosen_key) translation[actions[i].chosen_key] = actions[i].game_key;
@@ -166,4 +172,19 @@ static void page(void) {
     }
 }
 
-const mod_option mod_option_keyboard = { "keyboard", chosen, page, 0 };
+/* Every frame: if the keys changed, make the game's key hints show them. An action that is on its own key keeps
+ * the game's picture. (This has to wait for a frame because the hints live in the game's state and texture.) */
+static void frame(void) {
+    int characters[ACTIONS], keys[ACTIONS], count = 0;
+    load();
+    if (!hints_stale) return;
+    hints_stale = 0;
+    for (int i = 0; i < ACTIONS; i++) {
+        if (!actions[i].hint) continue;
+        characters[count] = actions[i].hint;
+        keys[count++] = actions[i].chosen_key;              /* 0 = on its own key */
+    }
+    keycaps_set(count, characters, keys);
+}
+
+const mod_option mod_option_keyboard = { "keyboard", chosen, page, frame };

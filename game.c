@@ -942,8 +942,11 @@ static uint64_t slot_called(int off, const uint64_t *arg) {
 
     /* ---- graphics: creating things ---- */
     case 0x1d8:                                                 /* gfx_create_texture(pixels, w, h) */
-        return PTR(new_object(OBJ_TEXTURE, host_texture_create((const void *)(uintptr_t)a, (int)b, (int)c),
-                              (unsigned)b, (unsigned)c));
+    {
+        int texture = host_texture_create((const void *)(uintptr_t)a, (int)b, (int)c);
+        mods_texture_created(texture, (const void *)(uintptr_t)a, (int)b, (int)c);      /* mods/keycaps.c: the key hints */
+        return PTR(new_object(OBJ_TEXTURE, texture, (unsigned)b, (unsigned)c));
+    }
     case 0x1e0:                                                 /* gfx_update_texture(texture, pixels, w, h) */
         if (a && OBJ(a)->kind == OBJ_TEXTURE)
             host_texture_update(OBJ(a)->id, (const void *)(uintptr_t)b, (int)c, (int)d);
