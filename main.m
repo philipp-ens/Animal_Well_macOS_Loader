@@ -34,6 +34,9 @@
 #include <unistd.h>
 #include "game.h"
 #include "steamcloud.h"
+#include "mods.h"
+#include "host.h"
+#include "notify/notify.h"
 
 #define WINDOW_W 1280
 #define WINDOW_H 720
@@ -449,9 +452,23 @@ static void release_all_keys(void) {
 @implementation GameView
 - (BOOL)acceptsFirstResponder { return YES; }
 - (void)keyDown:(NSEvent *)event {
+    if (mods_wants_typing()) {                              /* a mod's page has a text field: the key goes there */
+        release_all_keys();                                 /* the game must not keep seeing the key that led here */
+        NSString *typed = event.characters;
+        if (event.keyCode == 36 || event.keyCode == 76) mods_typed(MODS_KEY_RETURN, NULL);         /* return, enter */
+        else if (event.keyCode == 51) mods_typed(MODS_KEY_BACKSPACE, NULL);
+        else if (event.keyCode == 53) mods_typed(MODS_KEY_ESCAPE, NULL);
+        else if ((event.modifierFlags & NSEventModifierFlagCommand) && [event.charactersIgnoringModifiers isEqualToString:@"v"])
+            mods_typed(MODS_KEY_TEXT, [[NSPasteboard generalPasteboard] stringForType:NSPasteboardTypeString].UTF8String);     /* paste */
+        else if (!(event.modifierFlags & NSEventModifierFlagCommand) && typed.length)
+            mods_typed(MODS_KEY_TEXT, typed.UTF8String);
+        return;
+    }
     if (event.isARepeat || event.keyCode >= 128) return;
     int key = windows_key_for_event(event);
     if (key <= 0) return;                                   /* a key the game has no number for */
+    key = mods_translate_key(key);                          /* the keyboard mod: the user's own keys for the game's actions */
+    if (key <= 0) return;                                   /* the press was for the mod itself */
     if (g_keyHeld[event.keyCode]) game_set_key(g_keyHeld[event.keyCode], 0);
     g_keyHeld[event.keyCode] = key;
     game_set_key(key, 1);
@@ -914,14 +931,13 @@ static BOOL connect_steam(void) {
  * it signs in to Steam (once, by QR code) and brings the save file and the game's Steam Cloud save in line -
  * here, each time before the game starts and after it has ended. Never while the game runs: the game keeps its
  * save in memory and writes the file whenever it saves.
- * It is optional (menu "Steam Cloud Sync…"); without a sign-in nothing here does anything. */
-#define STEAM_APP_ID     813230
-#define CLOUD_SAVE_NAME  "%WinAppDataLocalLow%Billy Basso/Animal Well/AnimalWell.sav"      /* the save's name in the cloud */
+ * It is optional; without a sign-in nothing here does anything. Signing in and out is a page of the game's own
+ * menu: main menu > mods > steam cloud (mods/options/steam_cloud.c - STEAM_APP_ID and CLOUD_SAVE_NAME are in
+ * mods/host.h). Only what happens while no game is on the screen is done here: the sync at the start and at the
+ * end (with a macOS dialog if the two saves differ), and noticing that the sign-in was lost. */
 
 static NSString *g_cloudSave;           /* the save file that is kept in line with the cloud; nil = this run does not sync */
 static BOOL g_cloudPostponed;           /* the user answered a conflict with "Not Now": do not ask again in this run */
-static BOOL g_gameRunning;              /* between the game's start and its end: the save file must not be replaced then */
-static void cloud_menu(void);
 
 static NSString *date_text(uint64_t seconds_since_1970) {
     return [NSDateFormatter localizedStringFromDate:[NSDate dateWithTimeIntervalSince1970:seconds_since_1970]
@@ -933,35 +949,41 @@ static NSString *date_text(uint64_t seconds_since_1970) {
  * settings meanwhile. If the sync is on but the sign-in is gone or no longer good, the user did not do that - and
  * has to be told, or the save would silently stop reaching the Steam Cloud. */
 static NSString *const kCloudOnKey = @"SteamCloudAccount";
+/* The user's switch in the game (main menu > mods > steam cloud): off = no syncing at all. Before the switch was
+ * ever used it counts as on for someone who is signed in, so that an update does not turn their sync off. */
+static NSString *const kCloudEnabledKey = @"SteamCloudEnabled";
+static BOOL cloud_enabled(void) {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    if ([defaults objectForKey:kCloudEnabledKey]) return [defaults boolForKey:kCloudEnabledKey];
+    return [defaults stringForKey:@"SteamCloudAccount"] != nil || steamcloud_signed_in(NULL, 0);
+}
+
 static void cloud_set_on(const char *account) {             /* NULL = off */
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
     if (account) [defaults setObject:@(account) forKey:kCloudOnKey];
     else [defaults removeObjectForKey:kCloudOnKey];
 }
-/* Say once that the sign-in was lost, and offer to sign in again right away. What is left of the old sign-in is
- * removed and the sync is off from then on, so the message does not come again. */
-static void cloud_tell_signed_out(NSString *why) {
-    printf("Steam Cloud: signed out - %s\n", why.UTF8String);
+/* Say once that the sign-in was lost: with a notification inside the game (mods/notify), which appears with the
+ * game's first pictures. What is left of the old sign-in is removed and the sync is off from then on, so it does
+ * not come again. Signing in again is done in the game: main menu > mods > steam cloud.
+ * (If the sign-in turns out lost at the end of a run there is no game left to show it in: it is only logged.) */
+static void cloud_tell_signed_out(const char *why) {
+    printf("Steam Cloud: signed out - %s\n", why);
     cloud_set_on(NULL);
     steamcloud_sign_out();
-    NSModalResponse answer = ask(@"You are signed out of Steam",
-        [NSString stringWithFormat:@"%@\n\nYour save is not synced with the Steam Cloud until you sign in again - now, or "
-                                    "later with \"Steam Cloud Sync…\" in the menu. Your save on this Mac is fine.", why],
-        @[ @"Sign In Again…", @"Later" ]);
-    if (answer == NSAlertFirstButtonReturn) cloud_menu();   /* the same dialogs as from the menu */
+    notify_for("Logged out of Steam, please log in again.", NOTIFY_RED, 10);
 }
 
 /* `when` is "start" or "end" (for the log). Whatever goes wrong, the game must still start and end normally. */
 static void cloud_sync(const char *when) {
     char error[512] = "", account[256] = "";
-    if (!g_cloudSave) return;
+    if (!g_cloudSave || !cloud_enabled()) return;
     if (!steamcloud_signed_in(account, sizeof account)) {
         /* Each build of the loader keeps its sign-in in a Keychain entry of its own (see steamcloud.m): after an
          * update the sync is still "on" in the settings, or the old build's entry is still there, but this build
          * has no sign-in. */
         if ([[NSUserDefaults standardUserDefaults] stringForKey:kCloudOnKey] || steamcloud_other_build_login())
-            cloud_tell_signed_out(@"The loader was updated, and for your safety a new version cannot use the Steam "
-                                   "sign-in of the one before.");
+            cloud_tell_signed_out("the loader was updated; a new version cannot use the sign-in of the one before");
         return;
     }
     cloud_set_on(account);                                  /* also for sign-ins from before this was remembered */
@@ -969,8 +991,7 @@ static void cloud_sync(const char *when) {
     if (!steamcloud_connect(error, sizeof error)) {
         printf("Steam Cloud (%s): not synced - %s\n", when, error);
         if (steamcloud_login_rejected())
-            cloud_tell_signed_out(@"Steam no longer accepts the saved sign-in. It has run out, or it was removed from "
-                                   "your account's devices (Steam Guard), or the account's password was changed.");
+            cloud_tell_signed_out("Steam no longer accepts the saved sign-in");
         return;
     }
     steamcloud_conflict conflict = { 0 };
@@ -1004,33 +1025,6 @@ static void cloud_sync(const char *when) {
             @[ @"OK" ]);
 }
 
-/* Run a block on the main thread - also while a dialog is open (a dialog runs the main thread in a mode of its
- * own, in which ordinary "do this on the main thread" requests wait). */
-static void on_main_thread(void (^block)(void)) {
-    CFRunLoopPerformBlock(CFRunLoopGetMain(), kCFRunLoopCommonModes, block);
-    CFRunLoopWakeUp(CFRunLoopGetMain());
-}
-
-/* macOS can make QR codes itself (Core Image) */
-static NSImage *qr_image(NSString *text) {
-    CIFilter *filter = [CIFilter filterWithName:@"CIQRCodeGenerator"];
-    [filter setValue:[text dataUsingEncoding:NSUTF8StringEncoding] forKey:@"inputMessage"];
-    [filter setValue:@"M" forKey:@"inputCorrectionLevel"];
-    CIImage *dots = [filter.outputImage imageByApplyingTransform:CGAffineTransformMakeScale(8, 8)];    /* 8 pixels per dot */
-    NSBitmapImageRep *bitmap = [[NSBitmapImageRep alloc] initWithCIImage:dots];
-    NSImage *image = [[NSImage alloc] initWithSize:bitmap.size];
-    [image addRepresentation:bitmap];
-    return image;
-}
-
-/* steamcloud_sign_in calls this (on its own thread) with the address to show as a QR code, again whenever
- * Steam replaces it. `context` is the picture view in the dialog. */
-static void cloud_show_qr(const char *address, void *context) {
-    NSImageView *view = (__bridge NSImageView *)context;
-    NSString *text = @(address);
-    on_main_thread(^{ view.image = qr_image(text); });
-}
-
 /* Start the loader again once this process has ended, with the arguments it was started with. */
 static void restart_when_ended(void) {
     NSArray<NSString *> *arguments = NSProcessInfo.processInfo.arguments;
@@ -1054,267 +1048,41 @@ static void restart_when_ended(void) {
         printf("could not arrange the restart: %s\n", problem.localizedDescription.UTF8String);
 }
 
-/* When the game's save in the Steam Cloud was last changed; 0 = the cloud has none, -1 = could not look. */
-static int64_t cloud_save_time(char *error, size_t error_size) {
-    enum { MAX_FILES = 512 };
-    steamcloud_file *files = calloc(MAX_FILES, sizeof *files);
-    int count = steamcloud_list(STEAM_APP_ID, files, MAX_FILES, error, error_size);
-    int64_t time = count < 0 ? -1 : 0;
-    for (int i = 0; i < count && i < MAX_FILES; i++)
-        if (!strcmp(files[i].name, CLOUD_SAVE_NAME)) time = (int64_t)files[i].time;
-    free(files);
-    return time;
+/* ------------------------------------------------------------------ what the mods ask of this half (mods/host.h) */
+const char *mods_host_cloud_save(void) { return g_cloudSave ? g_cloudSave.fileSystemRepresentation : NULL; }
+
+void mods_host_cloud_set_on(const char *account) { cloud_set_on(account); }
+
+int mods_host_get_int(const char *name, int fallback) {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    return [defaults objectForKey:@(name)] ? (int)[defaults integerForKey:@(name)] : fallback;
+}
+void mods_host_set_int(const char *name, int value) { [[NSUserDefaults standardUserDefaults] setInteger:value forKey:@(name)]; }
+
+int  mods_host_cloud_enabled(void) { return cloud_enabled(); }
+void mods_host_cloud_set_enabled(int enabled) { [[NSUserDefaults standardUserDefaults] setBool:enabled != 0 forKey:kCloudEnabledKey]; }
+
+/* macOS makes the QR code as a picture with one pixel per dot; the pixels are read back from a bitmap of it. */
+int mods_host_qr(const char *text, uint8_t *modules, int max_side) {
+    CIFilter *filter = [CIFilter filterWithName:@"CIQRCodeGenerator"];
+    [filter setValue:[@(text) dataUsingEncoding:NSUTF8StringEncoding] forKey:@"inputMessage"];
+    [filter setValue:@"M" forKey:@"inputCorrectionLevel"];
+    CIImage *dots = filter.outputImage;
+    int side = (int)dots.extent.size.width;
+    if (!dots || side <= 0 || side > max_side || (int)dots.extent.size.height != side) return 0;
+    uint8_t *pixels = calloc((size_t)side * side, 4);
+    CGColorSpaceRef colors = CGColorSpaceCreateDeviceRGB();
+    [[CIContext context] render:dots toBitmap:pixels rowBytes:side * 4 bounds:dots.extent format:kCIFormatRGBA8 colorSpace:colors];
+    CGColorSpaceRelease(colors);
+    for (int i = 0; i < side * side; i++) modules[i] = pixels[i * 4] < 128;     /* dark = a dot */
+    free(pixels);
+    return side;
 }
 
-/* Right after a sign-in: compare the save here with the one in the Steam Cloud and, if they differ, let the user
- * choose at once which one to keep. `title` and `intro` open every message shown here.
- *
- * Unlike cloud_sync this runs while the game does, and the game keeps its save in memory. Sending this Mac's save
- * to the cloud is harmless then. Taking the cloud's is not: the game would write its old save over the new file the
- * next time it saves. So the game's saving is switched off first (game_lock_save), the file is replaced, and the
- * loader starts again - the game then reads the cloud's save like any other. */
-static void cloud_first_sync(NSString *title, NSString *intro) {
-    char error[512] = "";
-    const char *save = g_cloudSave.fileSystemRepresentation;
-    NSString *later = @"It is tried again when you quit the game.";
-    /* What an earlier sign-in (maybe of another account) remembered about the two sides says nothing now. Without
-     * it, two saves that differ are a conflict: never settled without asking. */
-    [[NSFileManager defaultManager] removeItemAtPath:[g_cloudSave stringByAppendingString:@".cloudsync"] error:nil];
-    if (!steamcloud_connect(error, sizeof error)) {
-        printf("Steam Cloud (sign-in): could not compare the saves - %s\n", error);
-        ask(title, [NSString stringWithFormat:@"%@\n\nThe Steam Cloud could not be reached just now (%s). %@", intro, error, later], @[ @"OK" ]);
-        return;
-    }
-
-    /* how the two sides differ */
-    steamcloud_conflict conflict = { 0 };
-    steamcloud_sync_result result;
-    BOOL only_cloud = NO;                                   /* the cloud has a save, this Mac has none yet */
-    if (![[NSFileManager defaultManager] fileExistsAtPath:g_cloudSave]) {
-        int64_t time = cloud_save_time(error, sizeof error);
-        result = time < 0 ? STEAMCLOUD_SYNC_FAILED : time == 0 ? STEAMCLOUD_IN_SYNC : STEAMCLOUD_CONFLICT;
-        conflict.cloud_time = time > 0 ? (uint64_t)time : 0;
-        only_cloud = time > 0;
-    } else {            /* sends this Mac's save if the cloud has none; otherwise changes nothing */
-        result = steamcloud_sync(STEAM_APP_ID, CLOUD_SAVE_NAME, save, STEAMCLOUD_WINDOWS, STEAMCLOUD_ASK, &conflict, error, sizeof error);
-    }
-
-    BOOL restart = NO;
-    NSString *outcome;
-    if (result == STEAMCLOUD_CONFLICT) {
-        NSString *text = only_cloud
-            ? [NSString stringWithFormat:@"%@\n\nThe Steam Cloud has a save (last changed %@); this Mac has none yet. Do you "
-                                          "want to use it?", intro, date_text(conflict.cloud_time)]
-            : [NSString stringWithFormat:@"%@\n\nYour save is different on this Mac and in the Steam Cloud:\n\n"
-                                          "This Mac: last changed %@\nSteam Cloud: last changed %@\n\nWhich one do you want "
-                                          "to keep? The other one is kept as a backup file in the save folder.",
-                                         intro, date_text(conflict.local_time), date_text(conflict.cloud_time)];
-        text = [text stringByAppendingString:@"\n\nTo use the Steam Cloud's save the game starts again: what you played "
-                                              "since you last saved is lost."];
-        NSModalResponse answer = ask(title, text, only_cloud ? @[ @"Use Steam Cloud's and Restart", @"Not Now" ]
-                                                             : @[ @"Use Steam Cloud's and Restart", @"Use This Mac's", @"Not Now" ]);
-        if (answer == NSAlertFirstButtonReturn) {
-            game_lock_save();                               /* the game must not write its old save over the download */
-            result = steamcloud_sync(STEAM_APP_ID, CLOUD_SAVE_NAME, save, STEAMCLOUD_WINDOWS, STEAMCLOUD_KEEP_CLOUD, NULL, error, sizeof error);
-            restart = YES;                                  /* also if it failed: only a new start makes the game save again */
-        } else if (answer == NSAlertSecondButtonReturn && !only_cloud) {
-            result = steamcloud_sync(STEAM_APP_ID, CLOUD_SAVE_NAME, save, STEAMCLOUD_WINDOWS, STEAMCLOUD_KEEP_LOCAL, NULL, error, sizeof error);
-        }
-    }
-    steamcloud_disconnect();
-    printf("Steam Cloud (sign-in): %s%s\n",
-           result == STEAMCLOUD_IN_SYNC ? "the save is the same here and in the cloud" :
-           result == STEAMCLOUD_DOWNLOADED ? "took the cloud's save (the one that was here is kept as .before-download)" :
-           result == STEAMCLOUD_UPLOADED ? "sent this Mac's save to the cloud" :
-           result == STEAMCLOUD_CONFLICT ? "the saves differ; the user chose to decide later" : "sync failed - ",
-           result == STEAMCLOUD_SYNC_FAILED ? error : "");
-
-    if (restart) {
-        if (result != STEAMCLOUD_DOWNLOADED)
-            ask(@"The Steam Cloud's save could not be fetched",
-                [NSString stringWithFormat:@"%s\n\nYour save on this Mac is as it was. The game starts again now.", error], @[ @"OK" ]);
-        g_cloudPostponed = YES;                             /* nothing changes any more in this run: no sync at its end */
-        restart_when_ended();
-        [NSApp terminate:nil];
-        return;
-    }
-    outcome = result == STEAMCLOUD_IN_SYNC ? @"Your save here and the one in the Steam Cloud are the same." :
-              result == STEAMCLOUD_UPLOADED ? @"This Mac's save was sent to the Steam Cloud." :
-              result == STEAMCLOUD_CONFLICT ? @"Nothing was changed. You are asked again when you quit the game." :
-              [NSString stringWithFormat:@"The saves could not be compared just now (%s). %@", error, later];
-    if (result == STEAMCLOUD_CONFLICT) return;              /* "Not Now": the dialog already said everything */
-    ask(title, [NSString stringWithFormat:@"%@\n\n%@", intro, outcome], @[ @"OK" ]);
-}
-
-/* What both ways of signing in end with. `error` says why if it did not work. */
-static void cloud_after_sign_in(BOOL signed_in, char *error) {
-    if (!signed_in) {
-        printf("Steam Cloud (sign-in): did not work - %s\n", error);
-        ask(@"The sign-in did not work", @(error), @[ @"OK" ]);
-        return;
-    }
-    char account[256] = "";
-    steamcloud_signed_in(account, sizeof account);
-    cloud_set_on(account);
-    NSString *title = @"Steam Cloud sync is on";
-    NSString *intro = [NSString stringWithFormat:@"Signed in as %s. From now on your save is brought in line with the Steam "
-                                                  "Cloud each time the game starts and each time it ends.", account];
-    if (!g_cloudSave) { ask(title, intro, @[ @"OK" ]); return; }    /* a test run with a save of its own: no syncing */
-    if (g_gameRunning) { cloud_first_sync(title, intro); return; }
-    /* Signed in before the game has started or after it has ended (from the "you are signed out" message): the
-     * ordinary sync does it, as at every start and end. What an earlier sign-in remembered is forgotten here too. */
-    [[NSFileManager defaultManager] removeItemAtPath:[g_cloudSave stringByAppendingString:@".cloudsync"] error:nil];
-    cloud_sync("sign-in");
-    ask(title, intro, @[ @"OK" ]);
-}
-
-/* The sign-in dialog: shows the QR code until the user has approved the sign-in in the Steam mobile app. */
-static void cloud_sign_in(void) {
-    NSAlert *alert = [NSAlert new];
-    alert.messageText = @"Sign in with the Steam mobile app";
-    alert.informativeText = @"Open the Steam app on your phone, go to the Steam Guard tab (the shield), choose "
-                             "\"Scan a QR code\" and scan this code. Then approve the sign-in on your phone.";
-    NSImageView *picture = [[NSImageView alloc] initWithFrame:NSMakeRect(0, 0, 240, 240)];
-    picture.imageScaling = NSImageScaleProportionallyUpOrDown;
-    alert.accessoryView = picture;
-    [alert addButtonWithTitle:@"Cancel"];
-
-    static char error[512];
-    __block BOOL finished = NO, signed_in = NO, dialog_open = YES;
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        int ok = steamcloud_sign_in(cloud_show_qr, (__bridge void *)picture, 300, error, sizeof error);
-        on_main_thread(^{
-            finished = YES;
-            signed_in = ok != 0;
-            if (dialog_open) [NSApp abortModal];            /* closes the dialog */
-        });
-    });
-    [alert runModal];
-    dialog_open = NO;
-    [alert.window orderOut:nil];
-    if (!finished) { steamcloud_cancel_sign_in(); return; }         /* "Cancel" was pressed */
-
-    cloud_after_sign_in(signed_in, error);
-}
-
-/* The other way to sign in, for people without the Steam mobile app: account name and password. */
-
-static NSAlert *g_signingIn;            /* the "Signing in to Steam…" dialog, while it is open */
-
-/* Ask for one line of text in a dialog. nil = cancelled. */
-static NSString *ask_text(NSString *title, NSString *text, NSString *placeholder) {
-    NSAlert *alert = [NSAlert new];
-    alert.messageText = title;
-    alert.informativeText = text;
-    NSTextField *field = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 220, 24)];
-    field.placeholderString = placeholder;
-    alert.accessoryView = field;
-    [alert addButtonWithTitle:@"OK"];
-    [alert addButtonWithTitle:@"Cancel"];
-    [alert layout];
-    alert.window.initialFirstResponder = field;
-    return [alert runModal] == NSAlertFirstButtonReturn ? field.stringValue : nil;
-}
-
-/* steamcloud_sign_in_password calls this (on its own thread) when the account has Steam Guard. */
-static int cloud_confirm(steamcloud_confirmation kind, const char *hint, char *code, size_t code_size, void *context) {
-    (void)context;
-    NSString *hint_text = @(hint ?: "");
-    if (kind == STEAMCLOUD_APPROVE_IN_APP || kind == STEAMCLOUD_APPROVE_BY_EMAIL) {     /* nothing to type: just say what to do */
-        on_main_thread(^{
-            g_signingIn.informativeText = kind == STEAMCLOUD_APPROVE_IN_APP
-                ? @"Now approve the sign-in in the Steam mobile app on your phone."
-                : [NSString stringWithFormat:@"Steam has emailed you a link (%@). Open it to approve the sign-in.", hint_text];
-        });
-        return 1;
-    }
-    __block NSString *typed = nil;
-    dispatch_semaphore_t answered = dispatch_semaphore_create(0);
-    on_main_thread(^{
-        typed = ask_text(@"Steam Guard code",
-                         [NSString stringWithFormat:@"%@\n\n%@",
-                             kind == STEAMCLOUD_CODE_FROM_EMAIL ? @"Steam has emailed you a code. Type it here."
-                                                                : @"Type the code the Steam mobile app shows under Steam Guard.",
-                             hint_text],
-                         @"code");
-        dispatch_semaphore_signal(answered);
-    });
-    dispatch_semaphore_wait(answered, DISPATCH_TIME_FOREVER);
-    if (!typed.length) return 0;
-    snprintf(code, code_size, "%s", typed.UTF8String);
-    return 1;
-}
-
-static void cloud_sign_in_with_password(void) {
-    /* account name and password */
-    NSAlert *form = [NSAlert new];
-    form.messageText = @"Sign in to Steam";
-    form.informativeText = @"Your password goes to Steam only, encrypted with Steam's own key. The loader does not keep it; "
-                            "what it keeps (in your Mac's Keychain) is the sign-in Steam hands back.";
-    NSView *fields = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 240, 56)];
-    NSTextField *name = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 32, 240, 24)];
-    name.placeholderString = @"Steam account name";
-    NSSecureTextField *password = [[NSSecureTextField alloc] initWithFrame:NSMakeRect(0, 0, 240, 24)];
-    password.placeholderString = @"Password";
-    name.nextKeyView = password;
-    [fields addSubview:name];
-    [fields addSubview:password];
-    form.accessoryView = fields;
-    [form addButtonWithTitle:@"Sign In"];
-    [form addButtonWithTitle:@"Cancel"];
-    [form layout];
-    form.window.initialFirstResponder = name;
-    if ([form runModal] != NSAlertFirstButtonReturn || !name.stringValue.length || !password.stringValue.length) return;
-    NSString *account_name = [name.stringValue copy], *secret = [password.stringValue copy];
-    password.stringValue = @"";
-
-    /* "Signing in…" while steamcloud_sign_in_password works on another thread */
-    g_signingIn = [NSAlert new];
-    g_signingIn.messageText = @"Signing in to Steam…";
-    g_signingIn.informativeText = @"";
-    [g_signingIn addButtonWithTitle:@"Cancel"];
-    static char error[512];
-    __block BOOL finished = NO, signed_in = NO, dialog_open = YES;
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        int ok = steamcloud_sign_in_password(account_name.UTF8String, secret.UTF8String, cloud_confirm, NULL, 300, error, sizeof error);
-        on_main_thread(^{
-            finished = YES;
-            signed_in = ok != 0;
-            if (dialog_open) [NSApp abortModal];
-        });
-    });
-    [g_signingIn runModal];
-    dialog_open = NO;
-    [g_signingIn.window orderOut:nil];
-    g_signingIn = nil;
-    if (!finished) { steamcloud_cancel_sign_in(); return; }
-    cloud_after_sign_in(signed_in, error);
-}
-
-/* menu "Steam Cloud Sync…" */
-static void cloud_menu(void) {
-    char account[256] = "";
-    if (steamcloud_signed_in(account, sizeof account)) {
-        NSModalResponse answer = ask(@"Steam Cloud sync is on",
-            [NSString stringWithFormat:@"Signed in as %s. Your save is brought in line with the Steam Cloud each time the game "
-                                        "starts and each time it ends.", account],
-            @[ @"OK", @"Sign Out" ]);
-        if (answer != NSAlertSecondButtonReturn) return;
-        steamcloud_sign_out();
-        cloud_set_on(NULL);                                 /* the user's own doing: nothing to tell them later */
-        ask(@"Signed out",
-            @"The save is no longer synced. Your save on this Mac and the one in the Steam Cloud both stay as they are.\n\n"
-             "The sign-in is still listed in your Steam account: to remove it there too, open Steam Guard in the Steam "
-             "mobile app and remove \"Animal Well Loader (Mac)\" from your devices.", @[ @"OK" ]);
-        return;
-    }
-    NSModalResponse answer = ask(@"Sync your save with the Steam Cloud",
-        @"The loader can keep your save in line with the Steam Cloud, so that your progress carries over between this "
-         "Mac and the game on Windows.\n\nYou sign in once: by scanning a QR code with the Steam mobile app (the loader "
-         "then never sees your password), or with your account name and password. The sign-in is kept in your Mac's "
-         "Keychain.", @[ @"Sign In With QR Code…", @"Sign In With Password…", @"Cancel" ]);
-    if (answer == NSAlertFirstButtonReturn) cloud_sign_in();
-    else if (answer == NSAlertSecondButtonReturn) cloud_sign_in_with_password();
+void mods_host_restart(void) {
+    g_cloudPostponed = YES;                                 /* nothing changes any more in this run: no sync at its end */
+    restart_when_ended();
+    [NSApp terminate:nil];
 }
 
 /* ------------------------------------------------------------------ application */
@@ -1325,10 +1093,8 @@ static void cloud_menu(void) {
 - (void)applicationWillTerminate:(NSNotification *)notification {
     game_steam_stop();
     for (NSWindow *window in NSApp.windows) [window orderOut:nil];      /* the game is over: no frozen picture while we sync */
-    g_gameRunning = NO;
     cloud_sync("end");
 }
-- (void)steamCloud:(id)sender { cloud_menu(); }
 - (void)showSaveFolder:(id)sender {
     [[NSWorkspace sharedWorkspace] openURL:[NSURL fileURLWithPath:save_folder()]];
 }
@@ -1433,8 +1199,6 @@ int main(int argc, char **argv) {
             setTarget:g_delegate];
         [[appMenu addItemWithTitle:@"Choose Another Game File…" action:@selector(forgetGameFile:) keyEquivalent:@""]
             setTarget:g_delegate];
-        [[appMenu addItemWithTitle:@"Steam Cloud Sync…" action:@selector(steamCloud:) keyEquivalent:@""]
-            setTarget:g_delegate];
         [appMenu addItem:[NSMenuItem separatorItem]];
         [appMenu addItemWithTitle:@"Quit" action:@selector(terminate:) keyEquivalent:@"q"];
         appItem.submenu = appMenu;
@@ -1512,7 +1276,6 @@ int main(int argc, char **argv) {
         /* load the exe and start the game: this creates all textures, targets and pipelines */
         game_start(exePath.fileSystemRepresentation, savePath ? savePath.fileSystemRepresentation : NULL,
                    WINDOW_W, WINDOW_H);
-        g_gameRunning = YES;
         compile_shaders();
         g_quadBuffer = [g_device newBufferWithBytes:game_fullscreen_quad
                                              length:192

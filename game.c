@@ -758,6 +758,7 @@ static void steam_unlock(const char *name) { printf("achievement %s (no Steam in
 
 /* ===================================================================== 5d. Platform table */
 #include "game.h"
+#include "mods.h"
 #include "dxbc2msl.h"
 
 const uint8_t *game_fullscreen_quad;
@@ -941,8 +942,11 @@ static uint64_t slot_called(int off, const uint64_t *arg) {
 
     /* ---- graphics: creating things ---- */
     case 0x1d8:                                                 /* gfx_create_texture(pixels, w, h) */
-        return PTR(new_object(OBJ_TEXTURE, host_texture_create((const void *)(uintptr_t)a, (int)b, (int)c),
-                              (unsigned)b, (unsigned)c));
+    {
+        int texture = host_texture_create((const void *)(uintptr_t)a, (int)b, (int)c);
+        mods_texture_created(texture, (const void *)(uintptr_t)a, (int)b, (int)c);      /* mods/keycaps.c: the key hints */
+        return PTR(new_object(OBJ_TEXTURE, texture, (unsigned)b, (unsigned)c));
+    }
     case 0x1e0:                                                 /* gfx_update_texture(texture, pixels, w, h) */
         if (a && OBJ(a)->kind == OBJ_TEXTURE)
             host_texture_update(OBJ(a)->id, (const void *)(uintptr_t)b, (int)c, (int)d);
@@ -1063,6 +1067,7 @@ void game_start(const char *exe_path, const char *sav_path, int window_width, in
     if (sav_path) snprintf(save_path, sizeof save_path, "%s", sav_path);
     game_fullscreen_quad = AT(0x209b600);                   /* 6 vertices: 0..320 x 0..180, uv 0..1024 x 0..2048 */
     patch_runtime();
+    mods_apply(base);                                       /* mods/mods.c: changes to the game itself */
     fill_platform();
     if (os_make_executable(AT(text_rva), (text_size + 0xfff) & ~(size_t)0xfff) != 0) { perror("mprotect"); exit(1); }
 #ifndef _WIN32

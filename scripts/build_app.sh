@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds "Animal Well Loader_x86_64.app" from game.c, dxbc2msl.c, main.m, steamcloud.m, get_game_files.sh
+# Builds "Animal Well Loader_x86_64.app" from game.c, dxbc2msl.c, main.m, steamcloud.m, mods.c, get_game_files.sh
 # and the icon
 # (it can be started from any folder):
 #     bash scripts/build_app.sh
@@ -29,7 +29,13 @@ cp "$ICON" "$APP/Contents/Resources/AppIcon.icns"
 CLOUD=steamcloud
 if [ ! -f "$CLOUD/steamcloud.m" ]; then CLOUD=.; fi
 
-clang -arch x86_64 -O2 -fobjc-arc -I "$CLOUD" game.c dxbc2msl.c main.m "$CLOUD/steamcloud.m" \
+# The mods (changes to the game itself) are in the folder mods/ - in the repository and inside the installer
+# package alike. Its subfolders hold one file per option of the "mods" submenu (mods/options/) and the in-game
+# notifications (mods/notify/): every .c file in mods/ and its subfolders is compiled.
+MODS=mods
+
+clang -arch x86_64 -O2 -fobjc-arc -I "$CLOUD" -I "$MODS" game.c dxbc2msl.c main.m "$CLOUD/steamcloud.m" \
+    "$MODS"/*.c "$MODS"/*/*.c \
     -framework Cocoa -framework Metal -framework MetalKit -framework QuartzCore \
     -framework AudioToolbox -framework GameController \
     -framework Security -framework CoreImage -lz \
