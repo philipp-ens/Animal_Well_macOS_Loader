@@ -147,15 +147,29 @@ static const uint16_t *MSABI mod_get_text(int id) {
     return (*current)[id] ? (*current)[id] : english[id];
 }
 
+/* The "mods" submenu slides in and out like the game's options menu (see main_menu / options_menu in the
+ * decompilation): for 20 frames the main menu is drawn too, and both are moved up or down by an amount that
+ * starts large and shrinks with the square of the time left.
+ *   opening:  the main menu goes down and out (y 0 -> 180), the submenu comes from above (y -180 -> 0)
+ *   closing:  the main menu comes back up (y 160 -> 0), the submenu goes up and out (y -20 -> -180) */
+enum { SLIDE_FRAMES = 20 };
+static int opening = SLIDE_FRAMES;          /* frames since the submenu was opened from the main menu */
+static int closing = -1;                    /* frames since it was left for the main menu; -1 = it is not closing */
+
+static float slide_left(int frames) {       /* 1 at the start, 0 when the slide is over */
+    float t = frames * (1.0f / SLIDE_FRAMES);
+    return t >= 1.0f ? 0.0f : (1.0f - t) * (1.0f - t);
+}
+
 /* C: what the new entry does */
-static void MSABI menu_entry_chosen(void) { open_menu(SUBMENU_ID); }
+static void MSABI menu_entry_chosen(void) { open_menu(SUBMENU_ID); opening = 0; closing = -1; }
 
 /* D: our menus, once per frame while one is open. 1 = menu_id was ours.
  *   SUBMENU_ID        the "mods" submenu: the options of options/list.h
  *   PAGE_ID + i       the page of option i, for options that have one */
 enum { OPTION_COUNT = sizeof mod_options / sizeof *mod_options, PAGE_ID = SUBMENU_ID + 1 };
 
-void mods_close_page(void) { open_menu(SUBMENU_ID); }
+void mods_close_page(void) { open_menu(SUBMENU_ID); opening = SLIDE_FRAMES; closing = -1; }     /* back from a page: no slide */
 
 static char MSABI submenu_update(void) {
     int id = GAME_INT(MENU_ID);
@@ -164,15 +178,42 @@ static char MSABI submenu_update(void) {
         return 1;
     }
     if (id != SUBMENU_ID) return 0;
+
+    float y = 0;                            /* where the submenu is drawn right now */
+    if (closing >= 0) {
+        float left = slide_left(closing);
+        push_offset(0, left * 160);
+        main_menu(1);
+        pop_offset();
+        y = left * 160 - 180;
+    } else if (opening < SLIDE_FRAMES) {
+        float left = slide_left(opening);
+        push_offset(0, 180 - left * 180);
+        main_menu(1);
+        pop_offset();
+        y = -left * 180;
+    }
+
+    push_offset(0, y);
+    ui_set_input(closing < 0);              /* a menu that is sliding away does not react any more */
     ui_title("mods");
     const char *labels[OPTION_COUNT];
     for (int i = 0; i < OPTION_COUNT; i++) labels[i] = mod_options[i]->label;
     int chosen = ui_options(60, labels, OPTION_COUNT);
+    int cancel = chosen < 0 && ui_cancel_pressed();
+    ui_set_input(1);
+    pop_offset();
+
+    if (closing >= 0) {
+        if (++closing >= SLIDE_FRAMES) { closing = -1; open_menu(1); }
+        return 1;
+    }
+    if (opening < SLIDE_FRAMES) opening++;
     if (chosen >= 0) {
         if (mod_options[chosen]->page) open_menu(PAGE_ID + chosen);
         if (mod_options[chosen]->chosen) mod_options[chosen]->chosen();
-    } else if (ui_cancel_pressed()) {
-        open_menu(1);
+    } else if (cancel) {
+        closing = 0;
     }
     return 1;
 }

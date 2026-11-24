@@ -16,6 +16,14 @@ extern uint8_t *mods_image;                 /* where the exe is mapped (set by m
  * its 32-bit jumps only reach places near it. Only while mods_apply runs - afterwards the code cannot be written. */
 uint32_t mods_add_code(const void *code, size_t size);
 
+/* two floats in one 64-bit number (x low, y high): how the game passes a point */
+static inline uint64_t mods_pack_xy(float x, float y) {
+    uint32_t bits[2];
+    __builtin_memcpy(bits, &x, 4);
+    __builtin_memcpy(bits + 1, &y, 4);
+    return (uint64_t)bits[1] << 32 | bits[0];
+}
+
 /* ---- the game's own functions, by rva ---- */
 #define GAME_FN(rva, result, ...) ((result (MSABI *)(__VA_ARGS__))AT(rva))
 #define set_color(argb)                 GAME_FN(0x17dc0, void, uint32_t)(argb)
@@ -29,6 +37,11 @@ uint32_t mods_add_code(const void *code, size_t size);
 /* a w x h picture of animation frame `frame` of sprite `sprite`; a negative w mirrors it */
 #define draw_atlas_scaled(x, y, w, h, sprite, frame) \
     GAME_FN(0x1a5a0, void, int, int, int, int, uint16_t, int, uint8_t, uint8_t, uint8_t)(x, y, w, h, sprite, frame, 0, 0, 0)
+/* move everything drawn until pop_offset by (x, y) pixels: the game's menus slide in and out with this */
+#define push_offset(x, y)               GAME_FN(0x17ee0, void, uint64_t)(mods_pack_xy(x, y))
+#define pop_offset()                    GAME_FN(0x17f30, void, void)()
+/* the game's main menu; 1 = only draw it (no input): what the options menu shows sliding away beside itself */
+#define main_menu(draw_only)            GAME_FN(0x1f050, void, char)(draw_only)
 #define push_color(argb)                GAME_FN(0x17de0, void, uint32_t)(argb)
 #define pop_color()                     GAME_FN(0x17e40, void, void)()
 #define draw_rect(x, y, w, h)           GAME_FN(0x182d0, void, int, int, int, int)(x, y, w, h)    /* in the current colour */

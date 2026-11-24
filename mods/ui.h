@@ -33,6 +33,10 @@ int  ui_options(int y, const char *const *labels, int count);
  * menus play for it. (ui_options plays the sounds for moving the choice and for choosing.) */
 int  ui_cancel_pressed(void);
 
+/* Switch the input of ui_options and ui_cancel_pressed off (0) or on again (1): for drawing a menu that is
+ * sliding away and must not react any more. */
+void ui_set_input(int on);
+
 /* A filled rectangle. */
 void ui_rect(int x, int y, int width, int height, uint32_t color);
 

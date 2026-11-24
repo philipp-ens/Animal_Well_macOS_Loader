@@ -365,7 +365,7 @@ static void page_typing(void) {
     pthread_mutex_lock(&lock);
     snprintf(words, sizeof words, "%s",
              state == NAME ? "type your steam account name, then press return." :
-             state == PASSWORD ? "type your password, then press return.\n\nit goes to steam only," : code_hint);
+             state == PASSWORD ? "type your password, then press return." : code_hint);
     snprintf(hint, sizeof hint, "%s", state == CODE ? steam_hint : "");
     pthread_mutex_unlock(&lock);
     int y = ui_text(160, 44, 290, UI_WHITE, words);
