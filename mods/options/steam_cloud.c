@@ -287,11 +287,11 @@ static void page_home(void) {
     int choice, y;
     if (!mods_host_cloud_save()) {                          /* a test run with a save of its own */
         y = ui_text(160, 44, 280, UI_WHITE, "this run uses a save file of its own and does not sync.");
-        if (input_cancel_pressed()) mods_close_page();
+        if (ui_cancel_pressed()) mods_close_page();
     } else if (!enabled) {
         choice = ui_options(56, off_options, 1);
         if (choice == 0) set_enabled(1);
-        else if (input_cancel_pressed()) mods_close_page();
+        else if (ui_cancel_pressed()) mods_close_page();
     } else if (signed_in) {
         snprintf(words, sizeof words, "signed in as %s.", account);
         y = ui_text(160, 44, 280, UI_WHITE, words);
@@ -302,7 +302,7 @@ static void page_home(void) {
             steamcloud_sign_out();
             mods_host_cloud_set_on(NULL);                   /* the user's own doing: nothing to tell them later */
             say(MESSAGE, "signed out.");
-        } else if (input_cancel_pressed()) {
+        } else if (ui_cancel_pressed()) {
             mods_close_page();
         }
     } else {
@@ -317,7 +317,7 @@ static void page_home(void) {
             start_job(job_sign_in_qr, 0);
         } else if (choice == 2) {
             show(NAME);
-        } else if (input_cancel_pressed()) {
+        } else if (ui_cancel_pressed()) {
             mods_close_page();
         }
     }
@@ -352,7 +352,7 @@ static void page_qr(void) {
     } else {
         below = ui_text(160, 70, 280, UI_WHITE, "asking steam for a qr code...");
     }
-    if (ui_options(below + 8, cancel, 1) == 0 || input_cancel_pressed()) {
+    if (ui_options(below + 8, cancel, 1) == 0 || ui_cancel_pressed()) {
         cancelled = 1;
         steamcloud_cancel_sign_in();                        /* the job then ends within a second and asks for HOME */
         say(WORKING, "cancelling...");
@@ -373,7 +373,7 @@ static void page_typing(void) {
     ui_field_draw(y + 8, &field);
     ui_text(160, 150, 290, UI_GREY, "return: go on     escape: back");
 
-    int done = field.done ? field.done : input_cancel_pressed() ? -1 : 0;
+    int done = field.done ? field.done : ui_cancel_pressed() ? -1 : 0;
     if (state == NAME) {
         if (done > 0 && field.text[0]) { snprintf(name, sizeof name, "%s", field.text); show(PASSWORD); }
         else if (done > 0) field.done = 0;                  /* nothing typed yet */
@@ -410,7 +410,7 @@ static void page_signing(void) {
     if (wants_code) { show(CODE); return; }
     int y = ui_text(160, 60, 280, UI_WHITE, words);
     if (hint[0]) ui_line(y + 4, UI_GREY, hint);
-    if (ui_options(146, cancel, 1) == 0 || input_cancel_pressed()) {
+    if (ui_options(146, cancel, 1) == 0 || ui_cancel_pressed()) {
         cancelled = 1;
         steamcloud_cancel_sign_in();
         say(WORKING, "cancelling...");
@@ -440,7 +440,7 @@ static void page_conflict(void) {
     } else if (choice == 1 && !only_cloud) {
         say(WORKING, "sending this mac's save to the steam cloud...");
         start_job(job_keep, STEAMCLOUD_KEEP_LOCAL);
-    } else if (choice >= 0 || input_cancel_pressed()) {     /* not now */
+    } else if (choice >= 0 || ui_cancel_pressed()) {     /* not now */
         say(MESSAGE, "nothing was changed. you are asked again when you quit the game.");
     }
 }
@@ -453,7 +453,7 @@ static void page_message(void) {
     pthread_mutex_unlock(&lock);
     int y = ui_text(160, 44, 290, UI_WHITE, words);
     if (state == WORKING) return;                           /* a job is at it: it says what comes next */
-    if (ui_options(y + 8, ok, 1) == 0 || input_cancel_pressed()) {
+    if (ui_options(y + 8, ok, 1) == 0 || ui_cancel_pressed()) {
         if (state == RESTART) mods_host_restart();
         else show(HOME);
     }

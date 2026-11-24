@@ -147,7 +147,7 @@ static void page(void) {
         snprintf(words, sizeof words, "press the key for: %s", actions[waiting_for].name);
         int y = ui_line(70, UI_WHITE, words);
         ui_text(160, y + 6, 280, UI_GREY, "escape: keep it as it is");
-        if (input_cancel_pressed()) waiting_for = -1;       /* the cancel button of a controller */
+        if (ui_cancel_pressed()) waiting_for = -1;       /* the cancel button of a controller */
         return;
     }
     for (int i = 0; i < ACTIONS; i++) {
@@ -161,7 +161,7 @@ static void page(void) {
     } else if (choice == ACTIONS) {
         for (int i = 0; i < ACTIONS; i++) { actions[i].chosen_key = 0; mods_host_set_int(actions[i].setting, 0); }
         rebuild();
-    } else if (input_cancel_pressed()) {                    /* the way back is the cancel button, as in the game's menus */
+    } else if (ui_cancel_pressed()) {                    /* the way back is the cancel button, as in the game's menus */
         mods_close_page();
     }
 }

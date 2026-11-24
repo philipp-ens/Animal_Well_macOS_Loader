@@ -26,8 +26,12 @@ int  ui_line(int y, uint32_t color, const char *text);
 
 /* A list of options like the main menu's entries: centred, one line each, the chosen one between the two
  * animated arrows. Up and down move the choice (the game's menu_row). Returns the index of the option the
- * confirm button was pressed on, -1 if none. */
+ * confirm button was pressed on, -1 if none. Moving and choosing play the game's menu sounds. */
 int  ui_options(int y, const char *const *labels, int count);
+
+/* 1 if the cancel button was pressed in this frame - the way back out of a page. Plays the sound the game's
+ * menus play for it. (ui_options plays the sounds for moving the choice and for choosing.) */
+int  ui_cancel_pressed(void);
 
 /* A filled rectangle. */
 void ui_rect(int x, int y, int width, int height, uint32_t color);

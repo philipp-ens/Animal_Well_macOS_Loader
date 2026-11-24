@@ -102,8 +102,8 @@ int ui_text_left(int x, int y, int max_width, uint32_t color, const char *text) 
 
 int ui_options(int y, const char *const *labels, int count) {
     int row = GAME_INT(MENU_ROW);
-    if (menu_down_repeat() && row < count - 1) row++;
-    if (menu_up_repeat() && row > 0) row--;
+    if (menu_down_repeat() && row < count - 1) { row++; play_sfx(SFX_MENU_DOWN); }
+    if (menu_up_repeat() && row > 0) { row--; play_sfx(SFX_MENU_UP); }
     if (row < 0 || row >= count) row = 0;
     GAME_INT(MENU_ROW) = row;
 
@@ -120,7 +120,15 @@ int ui_options(int y, const char *const *labels, int count) {
         draw_text(x, y, label);
         y += line;
     }
-    return count > 0 && input_confirm_pressed() ? row : -1;
+    if (count <= 0 || !input_confirm_pressed()) return -1;
+    play_sfx(SFX_MENU_CHOOSE);
+    return row;
+}
+
+int ui_cancel_pressed(void) {
+    if (!input_cancel_pressed()) return 0;
+    play_sfx(SFX_MENU_BACK);
+    return 1;
 }
 
 void ui_rect(int x, int y, int width, int height, uint32_t color) {

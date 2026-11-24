@@ -171,7 +171,7 @@ static char MSABI submenu_update(void) {
     if (chosen >= 0) {
         if (mod_options[chosen]->page) open_menu(PAGE_ID + chosen);
         if (mod_options[chosen]->chosen) mod_options[chosen]->chosen();
-    } else if (input_cancel_pressed()) {
+    } else if (ui_cancel_pressed()) {
         open_menu(1);
     }
     return 1;

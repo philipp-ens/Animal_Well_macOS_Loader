@@ -32,6 +32,9 @@ uint32_t mods_add_code(const void *code, size_t size);
 #define push_color(argb)                GAME_FN(0x17de0, void, uint32_t)(argb)
 #define pop_color()                     GAME_FN(0x17e40, void, void)()
 #define draw_rect(x, y, w, h)           GAME_FN(0x182d0, void, int, int, int, int)(x, y, w, h)    /* in the current colour */
+/* a menu sound, as the game's menus play them (the two numbers behind the sound are what they pass) */
+#define play_sfx(sound)                 GAME_FN(0x6f410, void, uint64_t, float, float)(sound, 1.0f, *(float *)AT(0x209c87c))
+enum { SFX_MENU_UP = 0x20, SFX_MENU_DOWN = 0x21, SFX_MENU_CHOOSE = 0x23, SFX_MENU_BACK = 0x25 };
 #define input_confirm_pressed()         GAME_FN(0x6d360, char, void)()
 #define input_cancel_pressed()          GAME_FN(0x6d4a0, char, void)()
 #define menu_down_repeat()              GAME_FN(0x6d740, char, void)()             /* down pressed, or held long enough to repeat */
