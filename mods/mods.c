@@ -98,6 +98,7 @@ static void mod_title_credit(const char *text) {
  * unused memory behind the game's code (mods_add_code). They are written
  * here as assembly; whatever address they need comes from an 8-byte slot behind stub B that is filled in below. */
 #define MENU_TEXT_ID 0x7000                 /* far above the game's 292 text ids */
+#define MENU_ENTRIES_UP 6                   /* how many pixels the main menu's entries are moved up */
 #define SUBMENU_ID   100                    /* a menu_id the game does not use */
 
 extern const uint8_t mod_menu_stub_a[], mod_menu_stub_a_end[], mod_menu_stub_b[], mod_menu_stub_b_slots[], mod_menu_stub_b_end[],
@@ -205,13 +206,75 @@ static void mod_menu_entry(void) {
     distance = (int32_t)(stub_c - (unknown_menu + 5));
     *AT(unknown_menu) = 0xE9;
     memcpy(AT(unknown_menu + 1), &distance, 4);
+    /* With one entry more the list reaches further down. Its first entry is at y 0x75 (rva 0x1f318:
+     * 41 bd 75 00 00 00 = mov r13d, 0x75); the whole list is moved up by MENU_ENTRIES_UP pixels. (For Chinese the
+     * game itself starts higher, at 0x6b - that stays.) */
+    if (memcmp(AT(0x1f318), "\x41\xbd\x75\x00\x00\x00", 6) == 0) *AT(0x1f31a) = 0x75 - MENU_ENTRIES_UP;
+    else fprintf(stderr, "mod_menu_entry: the entries were not moved up\n");
     /* B */
     replace_function(0x8f700, (void *)(uintptr_t)mod_get_text);
+}
+
+/* ------------------------------------------------------------------ once per frame, in every game mode
+ * Drawing on top of the game's picture needs a place in the game's code that runs once per frame while drawing
+ * is possible. That place is where game_update calls render_frame (rva 0x61bd7): everything the game drew in
+ * this frame is in its lists by then, and render_frame puts those lists on the screen. The call is pointed at a
+ * small stub that first calls frame_hook and then goes on to render_frame. The stub keeps render_frame's
+ * arguments (rcx, rdx, r8, r9, xmm0-xmm3) intact around our call. */
+static void MSABI frame_hook(void) {
+    for (int i = 0; i < OPTION_COUNT; i++)
+        if (mod_options[i]->frame) mod_options[i]->frame();
+    notify_draw();                              /* last: the notifications are on top of everything */
+}
+
+extern const uint8_t mod_frame_stub[], mod_frame_stub_slots[], mod_frame_stub_end[];
+__asm__(
+    ".intel_syntax noprefix\n"
+    ".text\n"
+    "_mod_frame_stub:\n"                       /* reached by game_update's "call render_frame" */
+    "    push rcx\n"
+    "    push rdx\n"
+    "    push r8\n"
+    "    push r9\n"
+    "    sub rsp, 0x68\n"                       /* room for xmm0-xmm3, and the stack is aligned for a call */
+    "    movups [rsp + 0x20], xmm0\n"
+    "    movups [rsp + 0x30], xmm1\n"
+    "    movups [rsp + 0x40], xmm2\n"
+    "    movups [rsp + 0x50], xmm3\n"
+    "    call qword ptr [rip + _mod_frame_stub_slots]\n"
+    "    movups xmm0, [rsp + 0x20]\n"
+    "    movups xmm1, [rsp + 0x30]\n"
+    "    movups xmm2, [rsp + 0x40]\n"
+    "    movups xmm3, [rsp + 0x50]\n"
+    "    add rsp, 0x68\n"
+    "    pop r9\n"
+    "    pop r8\n"
+    "    pop rdx\n"
+    "    pop rcx\n"
+    "    jmp qword ptr [rip + _mod_frame_stub_slots + 8]\n"
+    "_mod_frame_stub_slots:\n"
+    "    .quad 0, 0\n"                          /* frame_hook, render_frame */
+    "_mod_frame_stub_end:\n"
+    ".att_syntax\n");
+
+static void mod_frame_hook(void) {
+    const uint32_t call = 0x61bd7, render_frame = 0x104830;
+    int32_t distance;
+    memcpy(&distance, AT(call + 1), 4);
+    uint32_t stub = mods_add_code(mod_frame_stub, (size_t)(mod_frame_stub_end - mod_frame_stub));
+    if (*AT(call) != 0xE8 || call + 5 + (uint32_t)distance != render_frame || !stub) {
+        fprintf(stderr, "mod_frame_hook: not applied\n");
+        return;
+    }
+    uint64_t slots[2] = { (uint64_t)(uintptr_t)frame_hook, (uint64_t)(uintptr_t)AT(render_frame) };
+    memcpy(AT(stub + (uint32_t)(mod_frame_stub_slots - mod_frame_stub)), slots, sizeof slots);
+    distance = (int32_t)(stub - (call + 5));
+    memcpy(AT(call + 1), &distance, 4);         /* "call stub" */
 }
 
 void mods_apply(uint8_t *mapped_image) {
     mods_image = mapped_image;
     mod_title_credit("billy basso / bigmode 2024 / macOS by Community");
     mod_menu_entry();
-    notify_install();
+    mod_frame_hook();
 }

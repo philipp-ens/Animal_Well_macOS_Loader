@@ -20,6 +20,7 @@
 #include "../ui.h"
 #include "../host.h"
 #include "../game_api.h"
+#include "../notify/notify.h"   /* its colours */
 #include "../../game.h"         /* game_lock_save */
 #include "steamcloud.h"
 
@@ -243,11 +244,13 @@ static void *job_keep(void *which) {
 
 /* ------------------------------------------------------------------ the page (on the game's thread) */
 
+static int sync_on = -1;                /* for the line on the main menu: is a sign-in saved? -1 = not looked yet */
+
 static void show(int screen) {
     state = screen;
     GAME_INT(MENU_ROW) = 0;
     ui_field_end();
-    if (screen == HOME) signed_in = steamcloud_signed_in(account, sizeof account);
+    if (screen == HOME) signed_in = sync_on = steamcloud_signed_in(account, sizeof account);
     if (screen == NAME) ui_field_begin(&field, 0);
     if (screen == PASSWORD || screen == CODE) ui_field_begin(&field, screen == PASSWORD);
 }
@@ -458,4 +461,15 @@ static void page(void) {
     }
 }
 
-const mod_option mod_option_steam_cloud = { "steam cloud", chosen, page };
+/* Every frame: on the main menu, a small line at the bottom left that says whether the sync is on - green if a
+ * sign-in is saved, red if not. Looking for the sign-in asks the Keychain, so that is done once and then again
+ * whenever the page above shows its first screen (which is where signing in and out end). */
+static void frame(void) {
+    if (GAME_INT(GAME_MODE) != 2 || GAME_INT(MENU_ID) != 1) return;
+    if (sync_on < 0) sync_on = mods_host_cloud_save() && steamcloud_signed_in(NULL, 0);
+    push_layer(0x29);                           /* the layer of the menus' texts */
+    ui_text_left(4, 5, 5, sync_on ? NOTIFY_GREEN : NOTIFY_RED, sync_on ? "cloud on" : "cloud off");
+    pop_layer();
+}
+
+const mod_option mod_option_steam_cloud = { "steam cloud", chosen, page, frame };

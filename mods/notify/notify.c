@@ -1,10 +1,5 @@
-/* notify.c - see notify.h.
- *
- * To draw in every game mode the notifications need a place in the game's code that runs once per frame while
- * drawing is possible. That place is where game_update calls render_frame (rva 0x61bd7): everything the game
- * drew in this frame is in its lists by then, and render_frame puts those lists on the screen. The call is
- * pointed at a small stub that first calls draw_notifications and then goes on to render_frame. The stub keeps
- * render_frame's arguments (rcx, rdx, r8, r9, xmm0-xmm3) intact around our call. */
+/* notify.c - see notify.h. notify_draw is called once per frame by the frame hook in mods.c, right before the
+ * game puts the frame on the screen. */
 #include <pthread.h>
 #include <stdio.h>
 #include <string.h>
@@ -35,8 +30,7 @@ void notify_for(const char *text, uint32_t color, int seconds) {
 
 void notify(const char *text, uint32_t color) { notify_for(text, color, 5); }
 
-/* once per frame, right before the game puts the frame on the screen */
-static void MSABI draw_notifications(void) {
+void notify_draw(void) {
     note shown[MAX_NOTES];
     int count = 0;
     pthread_mutex_lock(&lock);
@@ -61,49 +55,4 @@ static void MSABI draw_notifications(void) {
         y += height + 6;
     }
     pop_layer();
-}
-
-extern const uint8_t mod_notify_stub[], mod_notify_stub_slots[], mod_notify_stub_end[];
-__asm__(
-    ".intel_syntax noprefix\n"
-    ".text\n"
-    "_mod_notify_stub:\n"                       /* reached by game_update's "call render_frame" */
-    "    push rcx\n"
-    "    push rdx\n"
-    "    push r8\n"
-    "    push r9\n"
-    "    sub rsp, 0x68\n"                       /* room for xmm0-xmm3, and the stack is aligned for a call */
-    "    movups [rsp + 0x20], xmm0\n"
-    "    movups [rsp + 0x30], xmm1\n"
-    "    movups [rsp + 0x40], xmm2\n"
-    "    movups [rsp + 0x50], xmm3\n"
-    "    call qword ptr [rip + _mod_notify_stub_slots]\n"
-    "    movups xmm0, [rsp + 0x20]\n"
-    "    movups xmm1, [rsp + 0x30]\n"
-    "    movups xmm2, [rsp + 0x40]\n"
-    "    movups xmm3, [rsp + 0x50]\n"
-    "    add rsp, 0x68\n"
-    "    pop r9\n"
-    "    pop r8\n"
-    "    pop rdx\n"
-    "    pop rcx\n"
-    "    jmp qword ptr [rip + _mod_notify_stub_slots + 8]\n"
-    "_mod_notify_stub_slots:\n"
-    "    .quad 0, 0\n"                          /* draw_notifications, render_frame */
-    "_mod_notify_stub_end:\n"
-    ".att_syntax\n");
-
-void notify_install(void) {
-    const uint32_t call = 0x61bd7, render_frame = 0x104830;
-    int32_t distance;
-    memcpy(&distance, AT(call + 1), 4);
-    uint32_t stub = mods_add_code(mod_notify_stub, (size_t)(mod_notify_stub_end - mod_notify_stub));
-    if (*AT(call) != 0xE8 || call + 5 + (uint32_t)distance != render_frame || !stub) {
-        fprintf(stderr, "notify_install: not applied\n");
-        return;
-    }
-    uint64_t slots[2] = { (uint64_t)(uintptr_t)draw_notifications, (uint64_t)(uintptr_t)AT(render_frame) };
-    memcpy(AT(stub + (uint32_t)(mod_notify_stub_slots - mod_notify_stub)), slots, sizeof slots);
-    distance = (int32_t)(stub - (call + 5));
-    memcpy(AT(call + 1), &distance, 4);         /* "call stub" */
 }

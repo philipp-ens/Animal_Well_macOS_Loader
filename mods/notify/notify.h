@@ -25,7 +25,7 @@ void notify(const char *text, uint32_t color);
 /* The same, staying for `seconds`. */
 void notify_for(const char *text, uint32_t color, int seconds);
 
-/* Put the drawing of the notifications into the game. mods_apply calls this once. */
-void notify_install(void);
+/* Draw the notifications; once per frame (the frame hook in mods.c calls it). */
+void notify_draw(void);
 
 #endif

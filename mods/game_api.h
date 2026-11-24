@@ -42,6 +42,7 @@ uint32_t mods_add_code(const void *code, size_t size);
 #define GAME_INT(offset)    (*(int32_t *)(GAME + (offset)))
 #define GAME_INT64(offset)  (*(int64_t *)(GAME + (offset)))
 enum {
+    GAME_MODE = 0x754cc,        /* 1 title screen, 2 menus, 3 intro, 4 the game itself, 5 the demo's end screen */
     MENU_ROW = 0x93610, MENU_SCROLL = 0x93618, MENU_STATE = 0x93640, MENU_ID = 0x93644, MENU_FRAMES = 0x93648,
     TOTAL_FRAMES = 0x46b5a0     /* 64 bits: frames since the game started */
 };

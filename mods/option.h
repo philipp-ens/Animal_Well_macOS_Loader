@@ -8,6 +8,8 @@ typedef struct {
     void (*chosen)(void);       /* called when the option is chosen with the confirm button; NULL = nothing to do */
     void (*page)(void);         /* NULL, or the option's own menu page: choosing the option opens it, and this is
                                    then called once per frame to draw it and handle its input (ui.h helps) */
+    void (*frame)(void);        /* NULL, or called once per frame in every game mode - title screen, menus, the game
+                                   itself - after the game has drawn: for drawing something on top of its picture */
 } mod_option;
 
 /* For an option's page: go back to the "mods" submenu. */
