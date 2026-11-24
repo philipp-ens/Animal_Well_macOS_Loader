@@ -23,6 +23,10 @@ void mods_host_cloud_set_enabled(int enabled);
 void mods_host_cloud_set_on(const char *account);
 
 /* ---- other ---- */
+/* A whole number in the loader's settings, under `name`; `fallback` if it was never set. Main thread only. */
+int  mods_host_get_int(const char *name, int fallback);
+void mods_host_set_int(const char *name, int value);
+
 /* Make a QR code of `text`. modules[y * side + x] = 1 for a dark dot; returns the side length in dots (with the
  * white border macOS adds), 0 if it could not be made or is larger than max_side. Main thread only. */
 int  mods_host_qr(const char *text, uint8_t *modules, int max_side);

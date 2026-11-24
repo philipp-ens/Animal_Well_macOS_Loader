@@ -17,4 +17,9 @@ enum { MODS_KEY_TEXT, MODS_KEY_RETURN, MODS_KEY_BACKSPACE, MODS_KEY_ESCAPE };
 int  mods_wants_typing(void);
 void mods_typed(int key, const char *text);
 
+/* The keyboard mod (options/keyboard.c). The window calls this for every key press that goes to the game, with
+ * the key's Windows number: it returns the number the game should get in its place - the same one, or the key
+ * of the action the user put on this key - or 0 if the game should not get the press at all. */
+int  mods_translate_key(int windows_key);
+
 #endif

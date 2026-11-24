@@ -3,7 +3,9 @@
 #include "../option.h"
 
 extern const mod_option mod_option_steam_cloud; /* steam_cloud.c */
+extern const mod_option mod_option_keyboard;    /* keyboard.c */
 
 static const mod_option *const mod_options[] = {
     &mod_option_steam_cloud,
+    &mod_option_keyboard,
 };

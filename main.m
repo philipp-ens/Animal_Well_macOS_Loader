@@ -467,6 +467,8 @@ static void release_all_keys(void) {
     if (event.isARepeat || event.keyCode >= 128) return;
     int key = windows_key_for_event(event);
     if (key <= 0) return;                                   /* a key the game has no number for */
+    key = mods_translate_key(key);                          /* the keyboard mod: the user's own keys for the game's actions */
+    if (key <= 0) return;                                   /* the press was for the mod itself */
     if (g_keyHeld[event.keyCode]) game_set_key(g_keyHeld[event.keyCode], 0);
     g_keyHeld[event.keyCode] = key;
     game_set_key(key, 1);
@@ -1050,6 +1052,12 @@ static void restart_when_ended(void) {
 const char *mods_host_cloud_save(void) { return g_cloudSave ? g_cloudSave.fileSystemRepresentation : NULL; }
 
 void mods_host_cloud_set_on(const char *account) { cloud_set_on(account); }
+
+int mods_host_get_int(const char *name, int fallback) {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    return [defaults objectForKey:@(name)] ? (int)[defaults integerForKey:@(name)] : fallback;
+}
+void mods_host_set_int(const char *name, int value) { [[NSUserDefaults standardUserDefaults] setInteger:value forKey:@(name)]; }
 
 int  mods_host_cloud_enabled(void) { return cloud_enabled(); }
 void mods_host_cloud_set_enabled(int enabled) { [[NSUserDefaults standardUserDefaults] setBool:enabled != 0 forKey:kCloudEnabledKey]; }
